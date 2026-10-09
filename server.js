@@ -1,6 +1,3 @@
-
-
-
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -1202,4 +1199,323 @@ function bindControls() {
     if(e.repeat)return;
     if(e.code==="Space")action("jump");
     if(e.code==="KeyE")action("pickup");
-    if(e
+    if(e.code==="KeyF")action("attack");
+    if(e.code==="KeyG")action("heavy");
+    if(e.code==="KeyQ")action("dodge");
+    if(e.code==="KeyR")action("break");
+    if(e.code==="Digit1")action("item:lime");
+    if(e.code==="Digit2")action("item:dart");
+    if(e.code==="Digit3")action("item:smoke");
+    if(e.code==="Digit4")action("item:robe");
+    if(e.code==="Digit5")action("item:dagger");
+  });
+
+  addEventListener("keyup",e=>keys[e.code]=false);
+}
+
+function sendInput() {
+  let x=moveX, y=moveY;
+  if(keys.KeyW||keys.ArrowUp)y-=1;
+  if(keys.KeyS||keys.ArrowDown)y+=1;
+  if(keys.KeyA||keys.ArrowLeft)x-=1;
+  if(keys.KeyD||keys.ArrowRight)x+=1;
+
+  const len=Math.hypot(x,y);
+  if(len>1){x/=len;y/=len}
+
+  // 正確的第一人稱方向：
+  // yaw=0 時鏡頭面向 -Z，前進 dz 必須為負。
+  const forward=-y;
+  const right=x;
+
+  const dx=-Math.sin(yaw)*forward+Math.cos(yaw)*right;
+  const dz=-Math.cos(yaw)*forward-Math.sin(yaw)*right;
+
+  blockHeld=!!keys.ShiftLeft;
+  sprinting=blockHeld;
+
+  socket.emit("input",{dx,dz,yaw,blocking:!!keys.KeyB,sprinting});
+}
+
+function makeOpponent(p) {
+  const group=new THREE.Group();
+  const isHai=p.role==="hai";
+  const robe=material(isHai?0x222d43:0x8e2930);
+  const trim=material(0xd0ad69,.35,.4);
+  const skin=material(0xb9805d);
+  const dark=material(0x151820);
+  const body=cylinder(.35,.42,1.05,robe,0,1.05,0,group,12);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(.24,16,12),skin);
+  head.position.y=1.8;group.add(head);
+
+  // 肩甲與腰帶增加輪廓辨識度
+  box(.82,.14,.42,trim,0,1.45,0,group);
+  box(.62,.13,.44,dark,0,.68,0,group);
+
+  const armL=cylinder(.105,.13,.72,robe,-.47,1.13,0,group);
+  armL.rotation.z=-.18;
+  const armR=cylinder(.105,.13,.72,robe,.47,1.13,0,group);
+  armR.rotation.z=.18;
+  cylinder(.13,.16,.15,trim,0,.48,0,group);
+  cylinder(.15,.12,.3,dark,-.18,.15,0,group);
+  cylinder(.15,.12,.3,dark,.18,.15,0,group);
+
+  if(isHai){
+    // 海大富：深色長袍、肩部護甲與頭巾
+    const cap=cylinder(.25,.28,.13,dark,0,2.03,0,group,12);
+    const band=box(.46,.07,.3,trim,0,1.96,0,group);
+    const beard=new THREE.Mesh(new THREE.ConeGeometry(.13,.33,8),dark);
+    beard.position.set(0,1.55,.17);group.add(beard);
+  }else{
+    // 韋小寶：紅袍與腰帶
+    const sash=box(.55,.1,.45,trim,0,.92,0,group);
+    const hat=cylinder(.23,.23,.12,dark,0,2.02,0,group,12);
+    box(.36,.08,.3,trim,0,2.09,0,group);
+  }
+
+  const label=makeTextSprite(isHai?"海大富":"韋小寶",isHai?"#d5dfff":"#ffdc9c");
+  label.position.y=2.55;
+  group.add(label);
+  group.userData.body=body;
+  group.userData.armL=armL;
+  group.userData.armR=armR;
+  group.userData.label=label;
+  return group;
+}
+
+function updateObjects(state) {
+  const seen=new Set();
+
+  for(const p of state.players){
+    if(p.id===myId)continue;
+    seen.add(p.id);
+
+    let mesh=playerMeshes.get(p.id);
+    if(!mesh){
+      mesh=makeOpponent(p);
+      scene.add(mesh);
+      playerMeshes.set(p.id,mesh);
+    }
+
+    // 煙霧狀態下，對手距離較遠時會隱去輪廓。
+    const me=state.players.find(q=>q.id===myId);
+    const inSmoke=me&&me.smokeUntil>Date.now()&&Math.hypot(me.x-p.x,me.z-p.z)>2;
+    mesh.visible=p.alive&&!inSmoke;
+    mesh.position.set(p.x,0,p.z);
+    mesh.rotation.y=p.yaw;
+    mesh.userData.armL.rotation.x=p.moving?Math.sin(Date.now()*.012)*.4:0;
+    mesh.userData.armR.rotation.x=p.moving?Math.sin(Date.now()*.012+Math.PI)*.4:0;
+    mesh.userData.body.scale.y=p.effect==="hit"?.92:1;
+    mesh.userData.label.material.opacity=1;
+  }
+
+  for(const [id,mesh] of playerMeshes){
+    if(!seen.has(id)){
+      scene.remove(mesh);
+      playerMeshes.delete(id);
+    }
+  }
+
+  const itemColors={lime:0xc4d65e,dart:0xcbd6e6,smoke:0x8d9db7,robe:0xc8a05c,dagger:0xb7c7db};
+  for(const item of state.items||[]){
+    if(!item.active){
+      const old=itemMeshes.get(item.id);
+      if(old)old.visible=false;
+      continue;
+    }
+
+    let mesh=itemMeshes.get(item.id);
+    if(!mesh){
+      const g=new THREE.Group();
+      const orb=new THREE.Mesh(
+        new THREE.IcosahedronGeometry(.25,1),
+        new THREE.MeshStandardMaterial({
+          color:itemColors[item.type]||0xffffff,
+          emissive:itemColors[item.type]||0xffffff,
+          emissiveIntensity:.45,
+          metalness:.25,roughness:.3
+        })
+      );
+      g.add(orb);
+      const ring=new THREE.Mesh(
+        new THREE.TorusGeometry(.42,.025,8,24),
+        material(0xe3c779,.25,.5)
+      );
+      ring.rotation.x=Math.PI/2;
+      g.add(ring);
+      const light=new THREE.PointLight(itemColors[item.type]||0xffffff,1.2,3);
+      g.add(light);
+      scene.add(g);
+      itemMeshes.set(item.id,g);
+      mesh=g;
+    }
+    mesh.visible=true;
+    mesh.position.set(item.x,.55+Math.sin(Date.now()*.002+item.x)*.1,item.z);
+    mesh.rotation.y=Date.now()*.001;
+  }
+
+  for(const id of state.destroyed||[]){
+    for(const [key,g] of objectMeshes){
+      const parts=key.split("_");
+      if(parts.length===3){
+        const x=Number(parts[1]),z=Number(parts[2]);
+        const screen=state.obstacles.find(o=>o.type==="screen"&&Math.abs(o.x-x)<.1&&Math.abs(o.z-z)<.1);
+        if(screen&&id===screen.id)g.visible=false;
+      }
+    }
+  }
+}
+
+function updateHud(state) {
+  const me=state.players.find(p=>p.id===myId);
+  if(!me)return;
+
+  $("roleName").textContent=myRole==="wei"?"韋小寶":"海大富";
+  $("roleSub").textContent=myRole==="wei"?"機敏・計謀・道具":"內力・掌法・擒拿";
+  $("hpText").textContent=Math.ceil(me.hp)+" / "+me.maxHp;
+  $("stText").textContent=Math.ceil(me.stamina)+" / "+me.maxStamina;
+  $("hpFill").style.width=(me.hp/me.maxHp*100)+"%";
+  $("stFill").style.width=(me.stamina/me.maxStamina*100)+"%";
+
+  $("round").textContent=!state.started?"等待另一位玩家加入……":
+    state.winner?(state.winner===myRole?"你贏了！":"你輸了！"):"紫禁城對決・生死一線";
+
+  $("messages").innerHTML=(state.messages||[]).slice(-4).map(m=>
+    "<div>"+escapeHtml(m.text)+"</div>"
+  ).join("");
+
+  const items=$("items");
+  items.innerHTML="";
+  if(myRole==="wei"){
+    const names={lime:"石灰粉",dart:"暗器",smoke:"煙霧彈",robe:"寶衣",dagger:"匕首"};
+    for(const key of Object.keys(names)){
+      const n=me.inventory[key]||0;
+      const b=document.createElement("button");
+      b.className="itembtn";
+      b.textContent=names[key]+" × "+n;
+      b.disabled=n<=0;
+      b.onclick=()=>action("item:"+key);
+      items.appendChild(b);
+    }
+  }else{
+    ["palm","poison","grab","guard"].forEach((key,i)=>{
+      const b=document.createElement("button");
+      b.className="itembtn";
+      b.textContent=["化骨綿掌","陰毒掌法","擒拿","內力護體"][i];
+      b.onclick=()=>action("skill:"+key);
+      items.appendChild(b);
+    });
+  }
+
+  // 角色專屬技能按鈕
+  ["skill1","skill2","skill3","skill4"].forEach(id=>{
+    $(id).style.display=myRole==="hai"?"block":"none";
+  });
+
+  if(state.winner){
+    $("result").style.display="flex";
+    $("resultTitle").textContent=state.winner===myRole?"大獲全勝":"對決落敗";
+    $("resultText").textContent=state.winner===myRole?
+      "你掌握了紫禁城的戰局。":"再調整走位、時機與技能搭配，重新挑戰。";
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g,c=>({
+    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"
+  }[c]));
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  if(!renderer||!camera)return;
+
+  const dt=Math.min(clock.getDelta(),.05);
+  const me=roomState&&roomState.players.find(p=>p.id===myId);
+
+  if(me){
+    const moving=Math.hypot(moveX,moveY)>.12;
+    if(moving)bob+=dt*10;
+    const bobY=moving?Math.sin(bob)*.035:0;
+
+    if(jumpV!==0||jumpY>0){
+      jumpV-=14*dt;
+      jumpY+=jumpV*dt;
+      if(jumpY<0){jumpY=0;jumpV=0}
+    }
+
+    // 相機方向與伺服器移動方向使用同一個 yaw。
+    camera.rotation.order="YXZ";
+    camera.rotation.y=yaw;
+    camera.rotation.x=pitch;
+
+    camera.position.set(me.x,1.62+jumpY+bobY,me.z);
+
+    // 第一人稱手臂的待機與攻擊動作
+    if(handGroup){
+      const attacking=me.attackUntil>Date.now();
+      const swing=attacking?Math.sin((me.attackUntil-Date.now())*.025):0;
+      handGroup.position.set(.02,moving?Math.sin(bob)*.012:0,0);
+      handGroup.rotation.x=attacking?-.6:0;
+      handGroup.rotation.z=moving?Math.sin(bob)*.025:0;
+      weaponGroup.rotation.x=attacking?swing*.4:0;
+    }
+  }
+
+  ambientParticles.forEach(p=>{
+    const a=p.geometry.attributes.position;
+    for(let i=0;i<a.count;i++){
+      a.array[i*3+1]+=.0015;
+      if(a.array[i*3+1]>8)a.array[i*3+1]=.5;
+    }
+    a.needsUpdate=true;
+  });
+
+  renderer.render(scene,camera);
+}
+
+socket.on("connect",()=>{
+  $("loadStatus").textContent="連線成功，準備加入對決。";
+});
+
+socket.on("joined",data=>{
+  myId=data.id;
+  myRole=data.role;
+  yaw=myRole==="wei"?-Math.PI/2:Math.PI/2;
+  $("loadStatus").textContent=myRole==="wei"?
+    "你是韋小寶：善用道具與走位。":
+    "你是海大富：運用掌法、擒拿與內力。";
+
+  makeWeapon();
+  if(handGroup){
+    handGroup.children[0].material=material(myRole==="hai"?0x202a3b:0x8c2630);
+  }
+});
+
+socket.on("state",state=>{
+  roomState=state;
+  started=state.started;
+  updateObjects(state);
+  updateHud(state);
+});
+
+$("start").addEventListener("click",()=>{
+  $("loading").style.display="none";
+  $("hud").style.display="block";
+  if(!scene){
+    initThree();
+    bindControls();
+  }
+  if(!myId)socket.emit("joinGame");
+  if(audioCtx&&audioCtx.state==="suspended")audioCtx.resume();
+});
+
+setInterval(sendInput,50);
+})();
+</script>
+</body>
+</html>`;
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("紫禁城 3D 對決伺服器已啟動：" + PORT);
+});
