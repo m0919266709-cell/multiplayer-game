@@ -1,3 +1,4 @@
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -7,1612 +8,896 @@ const server = http.createServer(app);
 const io = new Server(server);
 
 const PORT = process.env.PORT || 3000;
-const WIDTH = 1200;
-const HEIGHT = 760;
+const STEP = 50;
+const SIZE = 18;
 const rooms = new Map();
+const sockets = new Map();
 
-const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-const distance = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
-const normalizeAngle = a => Math.atan2(Math.sin(a), Math.cos(a));
-const angleDiff = (a, b) => normalizeAngle(a - b);
+const ITEMS = ["石灰粉", "暗器", "煙霧彈", "寶衣", "匕首"];
 
-function circleRectCollision(x, y, r, rect) {
-  const cx = clamp(x, rect.x, rect.x + rect.w);
-  const cy = clamp(y, rect.y, rect.y + rect.h);
-  return (x - cx) ** 2 + (y - cy) ** 2 < r * r;
-}
+const OBSTACLES = [
+  { id: "screenA", x: 0, z: -6, w: 8, d: 0.55, h: 2.2, kind: "screen" },
+  { id: "screenB", x: 0, z: 6, w: 8, d: 0.55, h: 2.2, kind: "screen" },
+  { id: "pillarA", x: -8, z: 0, w: 0.9, d: 0.9, h: 3.1, kind: "pillar" },
+  { id: "pillarB", x: 8, z: 0, w: 0.9, d: 0.9, h: 3.1, kind: "pillar" },
+  { id: "wallA", x: -12, z: -10, w: 7, d: 1, h: 3, kind: "wall" },
+  { id: "wallB", x: 12, z: -10, w: 7, d: 1, h: 3, kind: "wall" },
+  { id: "wallC", x: -12, z: 10, w: 7, d: 1, h: 3, kind: "wall" },
+  { id: "wallD", x: 12, z: 10, w: 7, d: 1, h: 3, kind: "wall" }
+];
 
-function segmentIntersectsRect(x1, y1, x2, y2, rect) {
-  const steps = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 8));
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const x = x1 + (x2 - x1) * t;
-    const y = y1 + (y2 - y1) * t;
-    if (
-      x >= rect.x && x <= rect.x + rect.w &&
-      y >= rect.y && y <= rect.y + rect.h
-    ) return true;
-  }
-  return false;
-}
+const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
+const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
+const now = () => Date.now();
 
-function createMap() {
+function newPlayer(id, role, index) {
   return {
-    walls: [
-      { x: 0, y: 0, w: WIDTH, h: 24 },
-      { x: 0, y: HEIGHT - 24, w: WIDTH, h: 24 },
-      { x: 0, y: 0, w: 24, h: HEIGHT },
-      { x: WIDTH - 24, y: 0, w: 24, h: HEIGHT },
-
-      { x: 100, y: 115, w: 300, h: 22 },
-      { x: 800, y: 115, w: 300, h: 22 },
-      { x: 100, y: 115, w: 22, h: 160 },
-      { x: 1078, y: 115, w: 22, h: 160 },
-
-      { x: 170, y: 245, w: 220, h: 22 },
-      { x: 810, y: 245, w: 220, h: 22 },
-      { x: 390, y: 210, w: 22, h: 150 },
-      { x: 788, y: 210, w: 22, h: 150 },
-
-      { x: 450, y: 105, w: 300, h: 22 },
-      { x: 450, y: 105, w: 22, h: 90 },
-      { x: 728, y: 105, w: 22, h: 90 },
-
-      { x: 275, y: 430, w: 185, h: 20 },
-      { x: 740, y: 430, w: 185, h: 20 },
-      { x: 580, y: 475, w: 40, h: 100 }
-    ],
-    floors: [
-      { x: 175, y: 315, w: 125, h: 75, damage: 0, state: 0 },
-      { x: 900, y: 315, w: 125, h: 75, damage: 0, state: 0 },
-      { x: 490, y: 285, w: 100, h: 75, damage: 0, state: 0 },
-      { x: 610, y: 285, w: 100, h: 75, damage: 0, state: 0 },
-      { x: 445, y: 505, w: 100, h: 65, damage: 0, state: 0 },
-      { x: 655, y: 505, w: 100, h: 65, damage: 0, state: 0 }
-    ],
-    pillars: [
-      { x: 300, y: 175, r: 22, hp: 45, maxHp: 45, fallen: false },
-      { x: 900, y: 175, r: 22, hp: 45, maxHp: 45, fallen: false },
-      { x: 440, y: 390, r: 22, hp: 45, maxHp: 45, fallen: false },
-      { x: 760, y: 390, r: 22, hp: 45, maxHp: 45, fallen: false },
-      { x: 510, y: 615, r: 22, hp: 45, maxHp: 45, fallen: false },
-      { x: 690, y: 615, r: 22, hp: 45, maxHp: 45, fallen: false }
-    ],
-    screens: [
-      { x: 130, y: 490, w: 100, h: 18 },
-      { x: 970, y: 490, w: 100, h: 18 },
-      { x: 525, y: 150, w: 150, h: 18 }
-    ],
-    crates: [
-      { x: 320, y: 540, w: 42, h: 42, hp: 25, maxHp: 25 },
-      { x: 838, y: 540, w: 42, h: 42, hp: 25, maxHp: 25 },
-      { x: 465, y: 205, w: 38, h: 38, hp: 25, maxHp: 25 },
-      { x: 700, y: 205, w: 38, h: 38, hp: 25, maxHp: 25 }
-    ]
-  };
-}
-
-function createPlayer(id, role) {
-  const wei = role === "wei";
-  return {
-    id,
-    role,
-    x: wei ? 210 : 990,
-    y: 650,
-    r: wei ? 18 : 20,
-    hp: wei ? 100 : 120,
-    maxHp: wei ? 100 : 120,
-    speed: wei ? 4.5 : 3.7,
-    angle: wei ? -Math.PI / 2 : -Math.PI / 2,
+    id, role,
+    x: index === 0 ? -3 : 3,
+    z: index === 0 ? 0 : 0,
+    yaw: index === 0 ? Math.PI / 2 : -Math.PI / 2,
+    hp: 100,
+    stamina: 100,
     alive: true,
-    input: {},
-    specialCooldown: 0,
-    attackCooldown: 0,
-    invincible: 0,
-    movementMode: "ground",
-    shenXing: 120,
-    shenfa: 100,
-    escapes: 3,
-    wallRunTimer: 0,
-    airTimer: 0,
-    vaultTimer: 0,
-    specialFlash: 0,
-    attackFlash: 0,
-    hitFlash: 0,
-    lastAction: "",
-    actionLock: false
+    score: 0,
+    input: { dx: 0, dz: 0 },
+    blocking: false,
+    dodgeUntil: 0,
+    jumpUntil: 0,
+    attackUntil: 0,
+    cooldownUntil: 0,
+    hitUntil: 0,
+    blindUntil: 0,
+    vestUntil: 0,
+    smokeUntil: 0,
+    inventory: Object.fromEntries(ITEMS.map(k => [k, 0])),
+    lastAction: ""
   };
 }
 
-function createRoom(name) {
-  return {
-    name,
-    players: {},
-    map: createMap(),
+function newRoom(id) {
+  const room = {
+    id,
+    players: new Map(),
     started: false,
     winner: null,
-    tick: 0,
-    effects: [],
-    createdAt: Date.now()
+    destroyed: new Set(),
+    items: [],
+    nextItemId: 1,
+    messages: [],
+    rematchAt: 0
   };
-}
 
-function getSolidRects(room) {
-  const map = room.map;
-  return [
-    ...map.walls,
-    ...map.screens,
-    ...map.crates.filter(c => c.hp > 0),
-    ...map.floors.filter(f => f.state >= 2)
+  const spots = [
+    [-9, -3], [9, 3], [-9, 3], [9, -3],
+    [-4, 0], [4, 0], [0, -9], [0, 9],
+    [-12, 0], [12, 0]
   ];
-}
 
-function collidesMap(room, x, y, r) {
-  for (const rect of getSolidRects(room)) {
-    if (circleRectCollision(x, y, r, rect)) return true;
+  for (let i = 0; i < 10; i++) {
+    const p = spots[i];
+    room.items.push({
+      id: room.nextItemId++,
+      type: ITEMS[i % ITEMS.length],
+      x: p[0] + (Math.random() - 0.5),
+      z: p[1] + (Math.random() - 0.5)
+    });
   }
+  return room;
+}
 
-  for (const p of room.map.pillars) {
-    if (p.fallen) continue;
-    if (Math.hypot(x - p.x, y - p.y) < r + p.r) return true;
+function message(room, text) {
+  room.messages.push({ text, at: now() });
+  room.messages = room.messages.slice(-5);
+}
+
+function roomOf(id) {
+  const roomId = sockets.get(id);
+  return roomId ? rooms.get(roomId) : null;
+}
+
+function obstacleActive(room, o) {
+  return !(o.kind === "screen" && room.destroyed.has(o.id));
+}
+
+function circleRect(x, z, radius, o) {
+  const cx = clamp(x, o.x - o.w / 2, o.x + o.w / 2);
+  const cz = clamp(z, o.z - o.d / 2, o.z + o.d / 2);
+  return Math.hypot(x - cx, z - cz) < radius;
+}
+
+function blocked(room, x, z, radius = 0.48) {
+  if (Math.abs(x) > SIZE - radius || Math.abs(z) > SIZE - radius) {
+    return true;
   }
-
-  return false;
+  return OBSTACLES.some(o =>
+    obstacleActive(room, o) && circleRect(x, z, radius, o)
+  );
 }
 
-function moveGround(room, p, dx, dy) {
-  const nx = clamp(p.x + dx, p.r + 24, WIDTH - p.r - 24);
-  const ny = clamp(p.y + dy, p.r + 24, HEIGHT - p.r - 24);
+function lineHitsRect(ax, az, bx, bz, o) {
+  const minX = o.x - o.w / 2;
+  const maxX = o.x + o.w / 2;
+  const minZ = o.z - o.d / 2;
+  const maxZ = o.z + o.d / 2;
+  const dx = bx - ax;
+  const dz = bz - az;
+  let t0 = 0, t1 = 1;
 
-  if (!collidesMap(room, nx, p.y, p.r)) p.x = nx;
-  if (!collidesMap(room, p.x, ny, p.r)) p.y = ny;
+  const tests = [
+    [-dx, ax - minX],
+    [dx, maxX - ax],
+    [-dz, az - minZ],
+    [dz, maxZ - az]
+  ];
+
+  for (const [p, q] of tests) {
+    if (Math.abs(p) < 1e-8) {
+      if (q < 0) return false;
+    } else {
+      const r = q / p;
+      if (p < 0) {
+        if (r > t1) return false;
+        t0 = Math.max(t0, r);
+      } else {
+        if (r < t0) return false;
+        t1 = Math.min(t1, r);
+      }
+    }
+  }
+  return t1 >= t0 && t1 > 0.03 && t0 < 0.97;
 }
 
-function hasLineOfSight(room, a, b) {
-  for (const rect of [
-    ...room.map.walls,
-    ...room.map.screens,
-    ...room.map.crates.filter(c => c.hp > 0)
-  ]) {
-    if (segmentIntersectsRect(a.x, a.y, b.x, b.y, rect)) return false;
+function hasSight(room, a, b) {
+  return !OBSTACLES.some(o =>
+    obstacleActive(room, o) &&
+    lineHitsRect(a.x, a.z, b.x, b.z, o)
+  );
+}
+
+function facing(a, b) {
+  const targetAngle = Math.atan2(b.x - a.x, b.z - a.z);
+  let d = targetAngle - a.yaw;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return Math.abs(d);
+}
+
+function knockback(room, attacker, target, amount) {
+  const dx = target.x - attacker.x;
+  const dz = target.z - attacker.z;
+  const len = Math.hypot(dx, dz) || 1;
+  const nx = target.x + dx / len * amount;
+  const nz = target.z + dz / len * amount;
+  if (!blocked(room, nx, target.z)) target.x = nx;
+  if (!blocked(room, target.x, nz)) target.z = nz;
+}
+
+function damage(room, attacker, target, base, label) {
+  if (!target.alive || now() < target.dodgeUntil) return false;
+
+  let amount = base;
+  if (target.blocking && facing(target, attacker) < 1.8) amount *= 0.2;
+  if (now() < target.vestUntil) amount *= 0.5;
+
+  target.hp = Math.max(0, target.hp - amount);
+  target.hitUntil = now() + 320;
+
+  if (!target.blocking) knockback(room, attacker, target, 0.85);
+
+  if (target.hp <= 0) {
+    target.alive = false;
+    attacker.score++;
+    message(room, target.role + "被" + attacker.role + "擊敗！");
+  } else {
+    message(room, attacker.role + "使出" + label + "，命中" + target.role + "！");
   }
   return true;
 }
 
-function addEffect(room, x, y, type, color, size = 25, life = 18) {
-  room.effects.push({
-    x, y, type, color, size, life, maxLife: life,
-    angle: Math.random() * Math.PI * 2
-  });
-  if (room.effects.length > 100) room.effects.shift();
-}
+function attack(room, p, heavy) {
+  const t = now();
+  if (!p.alive || t < p.cooldownUntil || t < p.hitUntil) return;
 
-function damageFloor(room, floor, amount) {
-  if (floor.state >= 2) return;
-  floor.damage += amount;
+  const cost = heavy ? 26 : 12;
+  if (p.stamina < cost) return;
+  p.stamina -= cost;
+  p.attackUntil = t + (heavy ? 480 : 260);
+  p.cooldownUntil = t + (heavy ? 900 : 390);
+  p.lastAction = heavy ? "重擊" : "攻擊";
 
-  if (floor.damage >= 100) {
-    floor.state = 2;
-    addEffect(room, floor.x + floor.w / 2, floor.y + floor.h / 2,
-      "collapse", "#d9b27a", 75, 35);
-  } else if (floor.damage >= 55) {
-    floor.state = 1;
+  const range = heavy ? 2.55 : 1.8;
+  const base = p.role === "海大富"
+    ? (heavy ? 27 : 15)
+    : (heavy ? 21 : 12);
+
+  for (const target of room.players.values()) {
+    if (target.id === p.id || !target.alive) continue;
+    if (dist(p, target) > range || facing(p, target) > 1.1) continue;
+    if (!hasSight(room, p, target)) continue;
+    damage(room, p, target, base, heavy ? "重掌" : "近身攻擊");
   }
 }
 
-function damagePillar(room, pillar, amount) {
-  if (pillar.fallen) return;
-
-  pillar.hp = Math.max(0, pillar.hp - amount);
-
-  if (pillar.hp <= 0) {
-    pillar.fallen = true;
-    addEffect(room, pillar.x, pillar.y, "collapse", "#d7b17b", 70, 35);
-
-    let nearest = null;
-    let nearestDistance = Infinity;
-
-    for (const f of room.map.floors) {
-      const d = Math.hypot(
-        f.x + f.w / 2 - pillar.x,
-        f.y + f.h / 2 - pillar.y
-      );
-      if (d < nearestDistance) {
-        nearestDistance = d;
-        nearest = f;
-      }
-    }
-
-    if (nearest) damageFloor(room, nearest, 90);
-
-    for (const p of Object.values(room.players)) {
-      if (!p.alive) continue;
-      if (Math.hypot(p.x - pillar.x, p.y - pillar.y) < 85) {
-        hurtPlayer(room, p, 10, pillar.x, pillar.y);
-      }
-    }
+function pickup(room, p) {
+  const item = room.items.find(i => dist(p, i) < 1.55);
+  if (!item) {
+    message(room, "附近沒有可拾取的道具。");
+    return;
   }
+  p.inventory[item.type] = Math.min(5, (p.inventory[item.type] || 0) + 1);
+  room.items = room.items.filter(i => i.id !== item.id);
+  message(room, p.role + "拾取了" + item.type + "！");
 }
 
-function hurtPlayer(room, p, damage, fromX, fromY) {
-  if (!p.alive || p.invincible > 0) return;
-
-  p.hp = Math.max(0, p.hp - damage);
-  p.hitFlash = 10;
-  p.invincible = 10;
-
-  const a = Math.atan2(p.y - fromY, p.x - fromX);
-  const nx = p.x + Math.cos(a) * 15;
-  const ny = p.y + Math.sin(a) * 15;
-
-  if (!collidesMap(room, nx, ny, p.r)) {
-    p.x = nx;
-    p.y = ny;
+function useItem(room, p, type) {
+  if (!ITEMS.includes(type) || !p.alive) return;
+  if (!p.inventory[type]) {
+    message(room, "你沒有" + type + "。");
+    return;
   }
 
-  addEffect(room, p.x, p.y, "hit", "#ffcf7a", 32, 20);
-
-  if (p.hp <= 0) {
-    p.alive = false;
-    p.movementMode = "ground";
-    addEffect(room, p.x, p.y, "ko", "#f3c879", 60, 45);
-  }
-}
-
-function attackCrates(room, p) {
-  for (const c of room.map.crates) {
-    if (c.hp <= 0) continue;
-
-    const cx = c.x + c.w / 2;
-    const cy = c.y + c.h / 2;
-    const d = Math.hypot(cx - p.x, cy - p.y);
-    const a = Math.atan2(cy - p.y, cx - p.x);
-
-    if (d < 100 && Math.abs(angleDiff(a, p.angle)) < 0.85) {
-      c.hp = Math.max(0, c.hp - 10);
-      addEffect(room, cx, cy, "hit", "#d4a56a", 22, 14);
-      break;
-    }
-  }
-}
-
-function attackPillars(room, p) {
-  for (const pillar of room.map.pillars) {
-    if (pillar.fallen) continue;
-
-    const d = Math.hypot(pillar.x - p.x, pillar.y - p.y);
-    const a = Math.atan2(pillar.y - p.y, pillar.x - p.x);
-
-    if (d < 105 && Math.abs(angleDiff(a, p.angle)) < 0.9) {
-      damagePillar(room, pillar, 15);
-      break;
-    }
-  }
-}
-
-function getOpponent(room, p) {
-  return Object.values(room.players).find(q => q.id !== p.id && q.alive);
-}
-
-function attack(room, p) {
-  if (p.attackCooldown > 0 || !p.alive) return;
-
-  p.attackCooldown = p.role === "wei" ? 22 : 28;
-  p.attackFlash = 10;
-  p.lastAction = "attack";
-
-  const range = p.role === "wei" ? 82 : 105;
-  const opponent = getOpponent(room, p);
-
-  addEffect(
-    room,
-    p.x + Math.cos(p.angle) * 32,
-    p.y + Math.sin(p.angle) * 32,
-    p.role === "wei" ? "slash" : "strike",
-    p.role === "wei" ? "#e8f5ff" : "#ffbc58",
-    range * 0.65,
-    14
+  p.inventory[type]--;
+  const enemies = [...room.players.values()].filter(
+    e => e.id !== p.id && e.alive
   );
 
-  if (opponent) {
-    const d = distance(p, opponent);
-    const targetAngle = Math.atan2(opponent.y - p.y, opponent.x - p.x);
-    const diff = Math.abs(angleDiff(targetAngle, p.angle));
+  if (type === "石灰粉") {
+    const targets = enemies.filter(e =>
+      dist(p, e) < 4 && hasSight(room, p, e)
+    );
+    targets.forEach(e => e.blindUntil = now() + 2600);
+    message(room, targets.length
+      ? p.role + "撒出石灰粉，干擾了對手！"
+      : p.role + "撒出石灰粉，但沒有命中。");
+  }
 
-    if (d < range && diff < (p.role === "wei" ? 0.9 : 1.0) &&
-        hasLineOfSight(room, p, opponent)) {
-      let damage;
+  if (type === "暗器") {
+    const target = enemies
+      .filter(e => dist(p, e) < 10 && hasSight(room, p, e))
+      .sort((a, b) => dist(p, a) - dist(p, b))[0];
+    if (target) damage(room, p, target, 13, "暗器");
+    else message(room, "暗器被障礙物擋住，或對手距離太遠。");
+  }
 
-      if (p.role === "wei") {
-        if (diff < 0.35) damage = 18;
-        else if (diff < 0.65) damage = 24;
-        else damage = 30;
-      } else {
-        damage = 17;
-        if (["wallrun", "air", "vault"].includes(p.movementMode)) {
-          damage += 4;
-        }
+  if (type === "煙霧彈") {
+    p.smokeUntil = now() + 3200;
+    enemies.filter(e => dist(p, e) < 7)
+      .forEach(e => e.blindUntil = now() + 1800);
+    message(room, p.role + "施放煙霧彈！");
+  }
+
+  if (type === "寶衣") {
+    p.vestUntil = now() + 6000;
+    message(room, p.role + "穿上寶衣，短時間減傷！");
+  }
+
+  if (type === "匕首") {
+    const target = enemies
+      .filter(e => dist(p, e) < 2.25 && hasSight(room, p, e))
+      .sort((a, b) => dist(p, a) - dist(p, b))[0];
+    if (target) damage(room, p, target, 25, "匕首突襲");
+    else message(room, "匕首沒有命中目標。");
+  }
+}
+
+function doAction(room, p, data) {
+  if (!room.started || room.winner || !p.alive || !data) return;
+
+  switch (data.type) {
+    case "attack": attack(room, p, false); break;
+    case "heavy": attack(room, p, true); break;
+    case "pickup": pickup(room, p); break;
+    case "useItem": useItem(room, p, data.item); break;
+
+    case "block":
+      p.blocking = !!data.value;
+      break;
+
+    case "dodge":
+      if (p.stamina >= 20 && now() >= p.hitUntil) {
+        p.stamina -= 20;
+        p.dodgeUntil = now() + 330;
+        p.cooldownUntil = Math.max(p.cooldownUntil, now() + 180);
       }
+      break;
 
-      hurtPlayer(room, opponent, damage, p.x, p.y);
+    case "jump":
+      if (p.stamina >= 12 && now() >= p.hitUntil) {
+        p.stamina -= 12;
+        p.jumpUntil = now() + 420;
+        p.dodgeUntil = now() + 160;
+      }
+      break;
+
+    case "break": {
+      const screen = OBSTACLES.find(o =>
+        o.kind === "screen" &&
+        !room.destroyed.has(o.id) &&
+        dist(p, o) < 2.2
+      );
+      if (screen) {
+        room.destroyed.add(screen.id);
+        message(room, p.role + "擊破了屏風！");
+      } else {
+        message(room, "附近沒有可擊破的屏風。");
+      }
+      break;
     }
-  }
-
-  attackCrates(room, p);
-  if (p.role === "hai") attackPillars(room, p);
-}
-
-function specialWei(room, p) {
-  if (p.specialCooldown > 0 || p.shenXing < 35 || !p.alive) return;
-
-  p.shenXing -= 35;
-  p.specialCooldown = 300;
-  p.invincible = Math.max(p.invincible, 45);
-  p.specialFlash = 25;
-  p.movementMode = "shenxing";
-  p.lastAction = "神行百變";
-
-  addEffect(room, p.x, p.y, "burst", "#9fe7ff", 55, 30);
-}
-
-function escapeWei(room, p) {
-  if (p.escapes <= 0 || !p.alive) return;
-
-  p.escapes--;
-  p.invincible = Math.max(p.invincible, 35);
-  p.movementMode = "escape";
-  p.lastAction = "脫身";
-
-  for (let i = 0; i < 8; i++) {
-    const nx = p.x + Math.cos(p.angle) * 18;
-    const ny = p.y + Math.sin(p.angle) * 18;
-    if (collidesMap(room, nx, ny, p.r)) break;
-
-    p.x = nx;
-    p.y = ny;
-    addEffect(room, p.x, p.y, "afterimage", "#80dfff", 24, 16);
-  }
-
-  p.movementMode = "ground";
-}
-
-function specialHai(room, p) {
-  if (p.specialCooldown > 0 || !p.alive) return;
-
-  p.specialCooldown = 180;
-  p.specialFlash = 24;
-  p.lastAction = "掌勢震擊";
-
-  const opponent = getOpponent(room, p);
-
-  if (opponent && distance(p, opponent) < 150 &&
-      hasLineOfSight(room, p, opponent)) {
-    const a = Math.atan2(opponent.y - p.y, opponent.x - p.x);
-    if (Math.abs(angleDiff(a, p.angle)) < 1.15) {
-      hurtPlayer(room, opponent, 22, p.x, p.y);
-    }
-  }
-
-  for (const pillar of room.map.pillars) {
-    const d = Math.hypot(pillar.x - p.x, pillar.y - p.y);
-    const a = Math.atan2(pillar.y - p.y, pillar.x - p.x);
-    if (d < 125 && Math.abs(angleDiff(a, p.angle)) < 1.1) {
-      damagePillar(room, pillar, 25);
-    }
-  }
-
-  addEffect(room, p.x, p.y, "shockwave", "#ffb14d", 125, 25);
-}
-
-function tryHaiMovement(room, p, action) {
-  if (!p.alive || p.shenfa <= 0 || p.specialCooldown > 0) return;
-
-  if (action === "wallrun" && p.shenfa >= 10) {
-    p.shenfa -= 10;
-    p.wallRunTimer = 28;
-    p.movementMode = "wallrun";
-    p.lastAction = "壁上飛行";
-    p.specialCooldown = 24;
-    addEffect(room, p.x, p.y, "burst", "#ffc16b", 30, 16);
-  }
-
-  if (action === "pillar" && p.shenfa >= 8) {
-    const nearby = room.map.pillars.some(q =>
-      !q.fallen && Math.hypot(q.x - p.x, q.y - p.y) < 85
-    );
-
-    if (nearby) {
-      p.shenfa -= 8;
-      p.airTimer = 8;
-      p.movementMode = "air";
-      p.lastAction = "轉柱躍身";
-      p.specialCooldown = 24;
-    }
-  }
-
-  if (action === "vault" && p.shenfa >= 12) {
-    p.shenfa -= 12;
-
-    const blocked35 = collidesMap(
-      room,
-      p.x + Math.cos(p.angle) * 35,
-      p.y + Math.sin(p.angle) * 35,
-      p.r
-    );
-
-    const nx = p.x + Math.cos(p.angle) * 70;
-    const ny = p.y + Math.sin(p.angle) * 70;
-
-    if (blocked35 && !collidesMap(room, nx, ny, p.r)) {
-      p.x = nx;
-      p.y = ny;
-      p.vaultTimer = 10;
-      p.movementMode = "vault";
-      p.lastAction = "飛身越障";
-      p.specialCooldown = 35;
-      addEffect(room, p.x, p.y, "burst", "#ffca83", 35, 18);
-    }
-  }
-}
-
-function updatePlayer(room, p) {
-  if (!p.alive) return;
-
-  const keys = p.input || {};
-  const left = !!keys.left;
-  const right = !!keys.right;
-  const up = !!keys.up;
-  const down = !!keys.down;
-
-  let dx = (right ? 1 : 0) - (left ? 1 : 0);
-  let dy = (down ? 1 : 0) - (up ? 1 : 0);
-
-  if (dx || dy) {
-    const len = Math.hypot(dx, dy);
-    dx /= len;
-    dy /= len;
-    p.angle = Math.atan2(dy, dx);
-  }
-
-  let speed = p.speed;
-
-  if (p.role === "hai" &&
-      ["wallrun", "air", "vault"].includes(p.movementMode)) {
-    speed *= 1.55;
-  }
-
-  moveGround(room, p, dx * speed, dy * speed);
-
-  if (p.role === "wei") {
-    p.shenXing = Math.min(120, p.shenXing + 0.45);
-  } else {
-    p.shenfa = Math.min(100, p.shenfa + 0.35);
-  }
-
-  if (p.specialCooldown > 0) p.specialCooldown--;
-  if (p.attackCooldown > 0) p.attackCooldown--;
-  if (p.invincible > 0) p.invincible--;
-  if (p.specialFlash > 0) p.specialFlash--;
-  if (p.attackFlash > 0) p.attackFlash--;
-  if (p.hitFlash > 0) p.hitFlash--;
-
-  if (p.role === "hai") {
-    if (p.wallRunTimer > 0) {
-      p.wallRunTimer--;
-      p.movementMode = "wallrun";
-    } else if (p.airTimer > 0) {
-      p.airTimer--;
-      p.movementMode = "air";
-    } else if (p.vaultTimer > 0) {
-      p.vaultTimer--;
-      p.movementMode = "vault";
-    } else {
-      p.movementMode = "ground";
-    }
-  }
-
-  if (keys.attack) attack(room, p);
-
-  if (keys.special) {
-    if (p.role === "wei") specialWei(room, p);
-    else specialHai(room, p);
-  }
-
-  if (p.role === "wei" && keys.escape) {
-    escapeWei(room, p);
-  }
-
-  if (p.role === "hai") {
-    if (keys.wallrun) tryHaiMovement(room, p, "wallrun");
-    if (keys.pillar) tryHaiMovement(room, p, "pillar");
-    if (keys.vault) tryHaiMovement(room, p, "vault");
   }
 }
 
 function serializePlayer(p) {
   return {
-    id: p.id,
-    role: p.role,
-    x: p.x,
-    y: p.y,
-    r: p.r,
-    hp: p.hp,
-    maxHp: p.maxHp,
-    angle: p.angle,
-    alive: p.alive,
-    specialCooldown: p.specialCooldown,
-    invincible: p.invincible,
-    movementMode: p.movementMode,
-    shenXing: p.shenXing,
-    shenfa: p.shenfa,
-    escapes: p.escapes,
-    specialFlash: p.specialFlash,
-    attackFlash: p.attackFlash,
-    hitFlash: p.hitFlash,
-    lastAction: p.lastAction
+    id: p.id, role: p.role, x: p.x, z: p.z, yaw: p.yaw,
+    hp: p.hp, stamina: p.stamina, alive: p.alive, score: p.score,
+    blocking: p.blocking,
+    dodging: now() < p.dodgeUntil,
+    jumping: now() < p.jumpUntil,
+    attacking: now() < p.attackUntil,
+    hit: now() < p.hitUntil,
+    blind: now() < p.blindUntil,
+    vest: now() < p.vestUntil,
+    smoke: now() < p.smokeUntil,
+    inventory: p.inventory
   };
 }
 
-function serializeRoom(room) {
-  return {
-    name: room.name,
-    players: Object.values(room.players).map(serializePlayer),
-    map: room.map,
-    started: room.started,
-    winner: room.winner,
-    effects: room.effects
-  };
-}
+function sendState(room) {
+  for (const p of room.players.values()) {
+    const visiblePlayers = [...room.players.values()]
+      .filter(other => {
+        if (other.id === p.id) return true;
+        if (now() < p.blindUntil) return false;
+        if (now() < other.smokeUntil && dist(p, other) > 2.0) return false;
+        return hasSight(room, p, other);
+      })
+      .map(serializePlayer);
 
-function resetRoom(room) {
-  room.map = createMap();
-  room.started = Object.keys(room.players).length >= 2;
-  room.winner = null;
-  room.effects = [];
-
-  for (const p of Object.values(room.players)) {
-    const fresh = createPlayer(p.id, p.role);
-    Object.assign(p, fresh);
+    io.to(p.id).emit("state", {
+      roomId: room.id,
+      role: p.role,
+      started: room.started,
+      winner: room.winner,
+      players: visiblePlayers,
+      items: room.items,
+      obstacles: OBSTACLES,
+      destroyed: [...room.destroyed],
+      messages: room.messages.slice(-4),
+      me: serializePlayer(p)
+    });
   }
 }
 
-function gameLoop() {
-  for (const room of rooms.values()) {
-    room.tick++;
-
-    if (room.started && !room.winner) {
-      for (const p of Object.values(room.players)) updatePlayer(room, p);
-
-      const alive = Object.values(room.players).filter(p => p.alive);
-      if (alive.length <= 1 && Object.keys(room.players).length >= 2) {
-        room.winner = alive.length === 1 ? alive[0].role : "draw";
-      }
-    }
-
-    room.effects = room.effects.filter(e => {
-      e.life--;
-      return e.life > 0;
-    });
-
-    io.to(room.name).emit("state", serializeRoom(room));
+function endCheck(room) {
+  if (!room.started || room.winner) return;
+  const alive = [...room.players.values()].filter(p => p.alive);
+  if (alive.length <= 1 && room.players.size === 2) {
+    room.winner = alive[0] ? alive[0].role : "平手";
+    message(room, "本局結束，勝者：" + room.winner);
   }
 }
 
 io.on("connection", socket => {
-  socket.on("joinRoom", data => {
-    const name = String((data && data.room) || "紫禁城").slice(0, 30);
-    const role = data && data.role === "hai" ? "hai" : "wei";
+  socket.on("joinGame", () => {
+    if (sockets.has(socket.id)) return;
 
-    let room = rooms.get(name);
+    let room = [...rooms.values()].find(r =>
+      !r.started && !r.winner && r.players.size < 2
+    );
+
     if (!room) {
-      room = createRoom(name);
-      rooms.set(name, room);
+      room = newRoom("palace-" + Math.random().toString(36).slice(2, 7));
+      rooms.set(room.id, room);
     }
 
-    if (Object.keys(room.players).length >= 2) {
-      socket.emit("joinError", "房間已滿，請選擇其他房間。");
-      return;
+    const index = room.players.size;
+    const role = index === 0 ? "韋小寶" : "海大富";
+    const p = newPlayer(socket.id, role, index);
+    room.players.set(socket.id, p);
+    sockets.set(socket.id, room.id);
+    socket.join(room.id);
+
+    socket.emit("joined", { id: socket.id, role, roomId: room.id });
+    message(room, role + "進入紫禁城！");
+
+    if (room.players.size === 2) {
+      room.started = true;
+      message(room, "對決開始！善用格擋、閃避和道具。");
     }
-
-    if (Object.values(room.players).some(p => p.role === role)) {
-      socket.emit("joinError", "這個角色已有人使用，請選另一個角色。");
-      return;
-    }
-
-    socket.join(name);
-    socket.data.room = name;
-    socket.data.role = role;
-
-    room.players[socket.id] = createPlayer(socket.id, role);
-    room.started = Object.keys(room.players).length >= 2;
-
-    socket.emit("joined", {
-      room: name,
-      role,
-      started: room.started
-    });
-
-    io.to(name).emit("state", serializeRoom(room));
+    sendState(room);
   });
 
-  socket.on("input", input => {
-    const room = rooms.get(socket.data.room);
-    if (!room || !room.players[socket.id]) return;
+  socket.on("input", data => {
+    const room = roomOf(socket.id);
+    if (!room || !room.started || room.winner) return;
+    const p = room.players.get(socket.id);
+    if (!p || !p.alive || !data) return;
 
-    const allowed = [
-      "up", "down", "left", "right", "attack", "special",
-      "escape", "wallrun", "pillar", "vault"
-    ];
+    const dx = Number(data.dx);
+    const dz = Number(data.dz);
+    const yaw = Number(data.yaw);
 
-    const safe = {};
-    for (const key of allowed) safe[key] = !!(input && input[key]);
-
-    room.players[socket.id].input = safe;
+    p.input.dx = Number.isFinite(dx) ? clamp(dx, -1, 1) : 0;
+    p.input.dz = Number.isFinite(dz) ? clamp(dz, -1, 1) : 0;
+    if (Number.isFinite(yaw)) p.yaw = yaw;
+    p.blocking = !!data.blocking;
   });
 
-  socket.on("restart", () => {
-    const room = rooms.get(socket.data.room);
+  socket.on("action", data => {
+    const room = roomOf(socket.id);
     if (!room) return;
-    resetRoom(room);
-    io.to(room.name).emit("state", serializeRoom(room));
+    const p = room.players.get(socket.id);
+    if (!p) return;
+    doAction(room, p, data);
+    endCheck(room);
+    sendState(room);
   });
 
   socket.on("disconnect", () => {
-    const name = socket.data.room;
-    if (!name) return;
-
-    const room = rooms.get(name);
+    const room = roomOf(socket.id);
+    sockets.delete(socket.id);
     if (!room) return;
 
-    delete room.players[socket.id];
-
-    if (Object.keys(room.players).length === 0) {
-      rooms.delete(name);
+    room.players.delete(socket.id);
+    if (room.players.size === 0) {
+      rooms.delete(room.id);
     } else {
       room.started = false;
       room.winner = null;
-      io.to(name).emit("opponentLeft");
+      message(room, "對手已離開，等待新玩家加入。");
+      sendState(room);
     }
   });
 });
 
-const html = `<!DOCTYPE html>
+setInterval(() => {
+  const dt = STEP / 1000;
+  for (const room of rooms.values()) {
+    if (!room.started || room.winner) continue;
+
+    for (const p of room.players.values()) {
+      if (!p.alive) continue;
+
+      if (now() < p.hitUntil) {
+        p.stamina = Math.min(100, p.stamina + 4 * dt);
+        continue;
+      }
+
+      const dx = p.input.dx;
+      const dz = p.input.dz;
+      const length = Math.hypot(dx, dz);
+      const speed = p.role === "海大富" ? 4.6 : 5.1;
+
+      if (length > 0.01) {
+        const boost = now() < p.dodgeUntil ? 2.0 : 1;
+        const slow = p.blocking ? 0.42 : 1;
+        const step = speed * boost * slow * dt / Math.max(1, length);
+        const nx = clamp(p.x + dx * step, -SIZE + 0.6, SIZE - 0.6);
+        const nz = clamp(p.z + dz * step, -SIZE + 0.6, SIZE - 0.6);
+
+        if (!blocked(room, nx, p.z)) p.x = nx;
+        if (!blocked(room, p.x, nz)) p.z = nz;
+
+        p.stamina = Math.max(0, p.stamina - (p.blocking ? 1 : 2.5) * dt);
+      } else {
+        p.stamina = Math.min(100, p.stamina + 14 * dt);
+      }
+    }
+
+    endCheck(room);
+    sendState(room);
+  }
+}, STEP);
+
+app.get("/", (req, res) => res.type("html").send(PAGE));
+
+const PAGE = `<!doctype html>
 <html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>紫禁城風雲｜韋小寶 vs 海大富</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>紫禁城：韋小寶對決海大富</title>
 <style>
-:root {
-  --gold: #f4d18b;
-  --gold2: #b98942;
-  --red: #791e24;
-  --dark: #100d0c;
-  --panel: rgba(19, 15, 13, .92);
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: radial-gradient(ellipse at top, #43241e 0%, #170f0d 50%, #080808 100%);
-  color: #f8e7c4;
-  font-family: "Noto Serif TC", "Microsoft JhengHei", serif;
-  overflow: hidden;
-}
-button, input { font: inherit; }
-button {
-  color: #ffe8b1;
-  border: 1px solid #b9904e;
-  background: linear-gradient(180deg, #682a28, #321515);
-  border-radius: 8px;
-  padding: 9px 14px;
-  cursor: pointer;
-  box-shadow: inset 0 1px rgba(255,255,255,.12), 0 3px 8px #0008;
-}
-button:active { transform: translateY(1px); }
-button:disabled { opacity: .35; cursor: not-allowed; }
-#topbar {
-  position: absolute; z-index: 5; top: 0; left: 0; right: 0;
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 14px;
-  background: linear-gradient(180deg, #160b0beF, #160b0b88, transparent);
-  pointer-events: none;
-}
-#brand { font-size: clamp(16px, 2.2vw, 25px); letter-spacing: 3px; color: var(--gold); text-shadow: 0 2px 12px #d38b34; }
-#topbar button { pointer-events: auto; padding: 6px 10px; font-size: 13px; }
-#gameWrap {
-  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
-}
-#game {
-  display: block; width: min(100vw, 157.9vh); height: min(63.33vw, 100vh);
-  max-width: 100vw; max-height: 100vh; object-fit: contain;
-  box-shadow: 0 0 55px #000, 0 0 0 1px #9d6d33;
-}
-#hud {
-  position: absolute; top: 54px; left: 50%; transform: translateX(-50%);
-  display: flex; align-items: center; justify-content: center; gap: 14px;
-  width: min(900px, 96vw); pointer-events: none;
-}
-.fighter {
-  flex: 1; min-width: 0; padding: 7px 10px; background: #160e0dd9;
-  border: 1px solid #9b713d; border-radius: 8px;
-  box-shadow: 0 3px 15px #0009;
-}
-.fighter .name { display:flex; justify-content:space-between; gap:8px; font-size:13px; margin-bottom:5px; }
-.bar { height: 9px; border: 1px solid #6c4c2c; background:#271c18; border-radius: 10px; overflow:hidden; }
-.bar > div { height:100%; width:100%; transition: width .15s; }
-#weiHp { background: linear-gradient(90deg,#8a242b,#ef6754,#ffcb8b); }
-#haiHp { background: linear-gradient(90deg,#9e6828,#e4ba60,#fff0a7); }
-.resource { margin-top:5px; height:4px; border-radius:4px; background:#30251e; overflow:hidden; }
-.resource div { height:100%; width:100%; background:#79d9e9; }
-#haiResource { background:#e2a95d; }
-#versus { color:#e9c37b; font-weight:bold; text-shadow:0 2px 8px #000; }
-#status {
-  position:absolute; left:50%; bottom:14px; transform:translateX(-50%);
-  padding:6px 12px; border-radius:6px; background:#110c0bd9;
-  border:1px solid #71502e; font-size:13px; text-align:center; max-width:90vw;
-}
-#joinScreen, #tutorial, #result {
-  position:absolute; z-index:10; inset:0; display:flex; align-items:center; justify-content:center;
-  background:radial-gradient(ellipse at center,#321b17eF,#090706f5);
-  padding:18px;
-}
-.panel {
-  width:min(640px, 96vw); max-height:92vh; overflow:auto;
-  padding:clamp(18px, 4vw, 32px);
-  border:1px solid #c29a57; border-radius:14px;
-  background:linear-gradient(145deg,#2c1a16f7,#100c0bf9);
-  box-shadow:0 0 0 5px #3d241b99, 0 18px 65px #000;
-}
-h1 { margin:0 0 8px; color:#f5d28a; letter-spacing:2px; font-size:clamp(24px,5vw,37px); }
-h2 { margin:18px 0 8px; color:#e9c27c; font-size:18px; }
-p { line-height:1.7; color:#e4d4b9; }
-.small { font-size:12px; color:#bca88b; }
-#joinScreen input {
-  width:100%; padding:11px; margin:8px 0 12px;
-  background:#0d0a09; color:#f8e7c4; border:1px solid #80613b; border-radius:7px;
-}
-.roleRow { display:flex; gap:10px; margin:12px 0; }
-.roleRow button { flex:1; padding:14px 8px; }
-.roleRow button.selected { outline:2px solid #f5d28a; background:linear-gradient(#8a3930,#4b1c18); }
-.mainBtn { width:100%; margin-top:12px; padding:13px; font-size:16px; }
-.tutorialGrid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
-.tip { padding:11px; border:1px solid #63472e; background:#17100e; border-radius:8px; }
-.tip b { color:#f4d18b; }
-#tutorial { display:none; z-index:12; }
-#result { display:none; z-index:15; background:#090706bb; }
-#result .panel { text-align:center; }
-#mobileControls { display:none; position:absolute; inset:auto 0 46px 0; z-index:7; pointer-events:none; }
-.pad { position:absolute; bottom:0; left:12px; width:150px; height:150px; pointer-events:auto; }
-.pad button {
-  position:absolute; width:48px; height:48px; padding:0; border-radius:50%;
-  font-size:20px; background:#281814bb; border-color:#c49b5b;
-  touch-action:none; user-select:none;
-}
-#up { left:51px; top:0; } #down { left:51px; bottom:0; }
-#left { left:0; top:51px; } #right { right:0; top:51px; }
-.actions {
-  position:absolute; right:12px; bottom:0; display:grid; grid-template-columns:repeat(2,66px);
-  gap:9px; pointer-events:auto;
-}
-.actions button { width:66px; height:58px; padding:3px; font-size:12px; touch-action:none; user-select:none; }
-#toast {
-  position:absolute; z-index:30; top:27%; left:50%; transform:translate(-50%,-50%);
-  background:#140d0df0; border:1px solid #e3bd72; border-radius:8px;
-  padding:12px 18px; display:none; text-align:center; box-shadow:0 4px 20px #000;
-}
-@media (pointer:coarse), (max-width:800px) {
-  #mobileControls { display:block; }
-  #status { bottom:206px; font-size:11px; }
-  #hud { top:48px; gap:5px; }
-  .fighter { padding:5px; }
-  .fighter .name { font-size:10px; }
-  #brand { letter-spacing:1px; }
-  .tutorialGrid { grid-template-columns:1fr; }
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111821;color:#fff;font-family:system-ui,"Noto Sans TC",sans-serif;touch-action:none}
+#game{position:fixed;inset:0}
+canvas{display:block}
+#hud{position:fixed;z-index:5;top:calc(env(safe-area-inset-top) + 8px);left:8px;background:#10131bdc;border:1px solid #b99457;border-radius:12px;padding:10px;width:190px;font-size:12px;pointer-events:none}
+#status{font-weight:800;color:#f1d18b;font-size:13px;margin-bottom:4px}
+.bar{height:9px;border-radius:9px;background:#3d2828;overflow:hidden;margin:4px 0 7px}
+.fill{height:100%;width:100%;transition:width .1s}
+#hpFill{background:linear-gradient(90deg,#a72e28,#f07855)}
+#stFill{background:linear-gradient(90deg,#8d6a22,#f4d478)}
+#items{line-height:1.65;color:#e8e0ce}
+#messages{position:fixed;right:8px;top:calc(env(safe-area-inset-top) + 8px);z-index:5;text-align:right;font-size:12px;text-shadow:0 2px 4px #000;max-width:45vw}
+#center{position:fixed;left:50%;top:45%;transform:translate(-50%,-50%);z-index:3;color:#fff7;font-size:24px;pointer-events:none}
+#tip{position:fixed;left:8px;bottom:8px;z-index:4;background:#10131bc9;padding:7px 9px;border-radius:8px;font-size:10px;max-width:45vw;line-height:1.5;pointer-events:none}
+#mobile{position:fixed;inset:0;z-index:6;pointer-events:none}
+#stickBase{position:absolute;left:20px;bottom:26px;width:124px;height:124px;border-radius:50%;background:#12172288;border:2px solid #d4b36b88;pointer-events:auto;touch-action:none}
+#stick{position:absolute;width:48px;height:48px;left:36px;top:36px;border-radius:50%;background:#d7bd7bcc;border:2px solid #fff8;pointer-events:none}
+#buttons{position:absolute;right:10px;bottom:16px;display:grid;grid-template-columns:repeat(3,58px);gap:7px;pointer-events:auto}
+.ctrl{border:1px solid #dfc080;border-radius:50%;width:58px;height:58px;color:#fff;background:#3c2925e8;font-weight:800;font-size:12px;touch-action:none;box-shadow:0 3px 8px #0007}
+.ctrl:active,.ctrl.active{background:#a34a2d}
+.ctrl.small{width:48px;height:48px;font-size:10px}
+#overlay{position:fixed;inset:0;z-index:20;background:linear-gradient(#10151beF,#17120feF);display:flex;align-items:center;justify-content:center;text-align:center;padding:22px}
+#panel{max-width:420px;width:100%;border:1px solid #b99457;border-radius:18px;padding:24px 18px;background:linear-gradient(145deg,#322b23,#141923);box-shadow:0 18px 55px #0008}
+h1{font-size:25px;color:#f2d18a;margin:0 0 8px}
+button.primary{border:1px solid #f0d79d;background:linear-gradient(#a84a2d,#702a22);border-radius:10px;padding:13px 24px;color:white;font-weight:800;font-size:16px;margin-top:12px}
+#note{color:#c8c0b0;font-size:12px;line-height:1.7}
+@media(min-width:850px){
+ #stickBase{left:28px;bottom:28px}
+ #buttons{right:24px;bottom:24px;grid-template-columns:repeat(3,66px)}
+ .ctrl{width:66px;height:66px;font-size:13px}
+ #tip{font-size:12px;max-width:350px}
+ #hud{width:230px;font-size:13px}
 }
 </style>
 </head>
 <body>
-<div id="topbar">
-  <div id="brand">紫禁城風雲</div>
-  <div>
-    <button id="helpBtn">📜 對戰教學</button>
-    <button id="backBtn">離開房間</button>
-  </div>
-</div>
-
-<div id="gameWrap"><canvas id="game" width="1200" height="760"></canvas></div>
-
+<div id="game"></div>
 <div id="hud">
-  <div class="fighter">
-    <div class="name"><b>韋小寶</b><span id="weiNumbers">100 / 100</span></div>
-    <div class="bar"><div id="weiHp"></div></div>
-    <div class="resource"><div id="weiResource"></div></div>
-  </div>
-  <div id="versus">VS</div>
-  <div class="fighter">
-    <div class="name"><b>海大富</b><span id="haiNumbers">120 / 120</span></div>
-    <div class="bar"><div id="haiHp"></div></div>
-    <div class="resource"><div id="haiResource"></div></div>
-  </div>
+ <div id="status">尚未加入戰場</div>
+ <div id="role">角色：—</div>
+ <div>氣血</div><div class="bar"><div id="hpFill" class="fill"></div></div>
+ <div>體力</div><div class="bar"><div id="stFill" class="fill"></div></div>
+ <div id="items">道具尚未同步</div>
 </div>
-
-<div id="status">正在準備紫禁城……</div>
-<div id="toast"></div>
-
-<div id="mobileControls">
-  <div class="pad">
-    <button id="up" data-key="up">▲</button>
-    <button id="down" data-key="down">▼</button>
-    <button id="left" data-key="left">◀</button>
-    <button id="right" data-key="right">▶</button>
-  </div>
-  <div class="actions">
-    <button data-key="attack">⚔<br>攻擊</button>
-    <button data-key="special">✦<br>特殊技</button>
-    <button data-key="escape">💨<br>脫身</button>
-    <button data-key="wallrun">壁上飛行</button>
-    <button data-key="pillar">轉柱躍身</button>
-    <button data-key="vault">飛身越障</button>
-  </div>
+<div id="messages"></div>
+<div id="center">＋</div>
+<div id="tip">左側搖桿移動；右側按鈕攻防。靠近道具按「拾取」。</div>
+<div id="mobile">
+ <div id="stickBase"><div id="stick"></div></div>
+ <div id="buttons">
+  <button class="ctrl" data-action="attack">攻擊</button>
+  <button class="ctrl" data-action="heavy">重掌</button>
+  <button class="ctrl" data-action="block" data-hold="true">格擋</button>
+  <button class="ctrl" data-action="dodge">閃避</button>
+  <button class="ctrl" data-action="jump">輕功</button>
+  <button class="ctrl" data-action="pickup">拾取</button>
+  <button class="ctrl small" data-item="石灰粉">石灰</button>
+  <button class="ctrl small" data-item="暗器">暗器</button>
+  <button class="ctrl small" data-item="煙霧彈">煙霧</button>
+  <button class="ctrl small" data-item="寶衣">寶衣</button>
+  <button class="ctrl small" data-item="匕首">匕首</button>
+  <button class="ctrl small" data-action="break">破屏</button>
+ </div>
 </div>
-
-<div id="joinScreen">
-  <div class="panel">
-    <h1>紫禁城風雲</h1>
-    <p>韋小寶 vs 海大富。宮牆、屏風、木箱、石柱與地磚都可能在戰鬥中改變戰局。</p>
-    <label for="roomName">對戰房間名稱</label>
-    <input id="roomName" maxlength="30" value="紫禁城">
-    <h2>選擇角色</h2>
-    <div class="roleRow">
-      <button id="chooseWei" class="selected">韋小寶<br><span class="small">靈巧、匕首、神行百變</span></button>
-      <button id="chooseHai">海大富<br><span class="small">掌勢、破壞、身法</span></button>
-    </div>
-    <button id="joinBtn" class="mainBtn">進入紫禁城</button>
-    <p class="small">兩位玩家需使用相同房間名稱，並分別選擇不同角色。若要測試多人對戰，請讓另一位玩家使用同一個伺服器網址進入。</p>
-  </div>
+<div id="overlay">
+ <div id="panel">
+  <h1>紫禁城・武俠對決</h1>
+  <p>韋小寶　VS　海大富</p>
+  <p id="note">風格化 3D 場景、近身攻防、道具與屏風戰術。請開啟第二個瀏覽器或另一台裝置進行雙人測試。</p>
+  <button id="start" class="primary">進入戰場</button>
+  <p id="wait" style="font-size:12px;color:#f0d18b"></p>
+ </div>
 </div>
-
-<div id="tutorial">
-  <div class="panel">
-    <h1>紫禁城對戰手冊</h1>
-    <p>勝負不只取決於攻擊。善用角度、距離、視線與可破壞地形，才有機會反敗為勝。</p>
-    <div class="tutorialGrid">
-      <div class="tip">
-        <b>🗡 韋小寶</b>
-        <p>普通攻擊使用匕首。正面命中造成 18 點傷害，側面 24 點，背後 30 點。</p>
-        <p>特殊技「神行百變」消耗 35 點身法能量，並提供短暫無敵。脫身可快速移動，但只有 3 次。</p>
-      </div>
-      <div class="tip">
-        <b>🥋 海大富</b>
-        <p>普通掌擊傷害 17 點，進行特殊移動時命中可額外造成傷害。</p>
-        <p>特殊技「掌勢震擊」可攻擊近距離對手及破壞前方石柱。</p>
-        <p>壁上飛行、轉柱躍身、飛身越障各有身法消耗與使用條件。</p>
-      </div>
-      <div class="tip">
-        <b>⌨️ 電腦操作</b>
-        <p>W A S D：移動</p>
-        <p>空白鍵或 J：普通攻擊</p>
-        <p>K：特殊技</p>
-        <p>L 或 Shift：韋小寶脫身</p>
-        <p>海大富：U 壁上飛行、I 轉柱躍身、O 飛身越障</p>
-      </div>
-      <div class="tip">
-        <b>📱 手機操作</b>
-        <p>使用左側方向鍵移動，右側按鈕施展攻擊、特殊技及角色專屬身法。</p>
-        <p>點擊教學按鈕可隨時重新查看操作方式。</p>
-      </div>
-      <div class="tip">
-        <b>🏯 場景機制</b>
-        <p>木箱會被攻擊破壞，石柱可承受傷害並倒塌，受損地磚也可能崩塌。倒塌物可能改變路線，並影響附近角色。</p>
-      </div>
-      <div class="tip">
-        <b>🎯 對戰策略</b>
-        <p>注意角色朝向與攻擊距離。牆壁、屏風及木箱會阻擋視線；不要只顧著連續攻擊，也要觀察對手的移動。</p>
-      </div>
-    </div>
-    <button id="closeTutorial" class="mainBtn">明白，開始對戰</button>
-  </div>
-</div>
-
-<div id="result">
-  <div class="panel">
-    <h1 id="resultTitle">對戰結束</h1>
-    <p id="resultText"></p>
-    <button id="restartBtn" class="mainBtn">重新開始</button>
-    <button id="resultTutorialBtn" class="mainBtn">查看教學</button>
-  </div>
-</div>
-
 <script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
 <script>
-(function() {
-  const socket = io();
-  const canvas = document.getElementById("game");
-  const ctx = canvas.getContext("2d");
+(function(){
+"use strict";
+const socket=io();
+const $=id=>document.getElementById(id);
+let scene,camera,renderer,clock;
+let myId=null,myRole=null,joined=false,state=null;
+let yaw=0,pitch=0.28;
+let meshes=new Map(),itemMeshes=new Map(),obstacleMeshes=new Map();
+let joystick={x:0,y:0,active:false,pointer:null};
+let blockHeld=false,jumpVisual=0,jumpSpeed=0,lastSend=0;
+const mat=(color,roughness=.8,metalness=0)=>new THREE.MeshStandardMaterial({color,roughness,metalness});
+const box=(parent,x,y,z,w,h,d,material)=>{
+ const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),material);
+ m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;parent.add(m);return m;
+};
 
-  let myRole = "wei";
-  let myId = null;
-  let roomName = "紫禁城";
-  let state = null;
-  let joined = false;
-  let tutorialWasShown = false;
-  let lastSent = "";
-  const keys = {
-    up:false, down:false, left:false, right:false,
-    attack:false, special:false, escape:false,
-    wallrun:false, pillar:false, vault:false
-  };
-  const pressed = {};
+function buildScene(){
+ scene=new THREE.Scene();
+ scene.background=new THREE.Color(0x121923);
+ scene.fog=new THREE.Fog(0x121923,32,65);
+ camera=new THREE.PerspectiveCamera(64,innerWidth/innerHeight,.1,120);
+ renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
+ renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));
+ renderer.setSize(innerWidth,innerHeight);
+ renderer.shadowMap.enabled=true;
+ renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+ renderer.outputColorSpace=THREE.SRGBColorSpace;
+ $("game").appendChild(renderer.domElement);
+ scene.add(new THREE.HemisphereLight(0xdce7ff,0x453024,2.1));
+ const sun=new THREE.DirectionalLight(0xffd7a0,2.7);
+ sun.position.set(-10,22,12);sun.castShadow=true;
+ sun.shadow.mapSize.set(1024,1024);scene.add(sun);
 
-  const $ = id => document.getElementById(id);
+ const stone=mat(0x82735d),tile=mat(0x9a886a),red=mat(0x792e24),dark=mat(0x4c211b);
+ const gold=mat(0xd3ae63,.38,.2),roof=mat(0x29423c),wall=mat(0xb9a47e);
+ const ground=new THREE.Mesh(new THREE.PlaneGeometry(36,36),stone);
+ ground.rotation.x=-Math.PI/2;ground.position.y=-.08;ground.receiveShadow=true;scene.add(ground);
+ for(let x=-17;x<=17;x+=2)for(let z=-17;z<=17;z+=2)
+  box(scene,x,-.015,z,1.94,.035,1.94,tile);
 
-  function toast(message) {
-    $("toast").textContent = message;
-    $("toast").style.display = "block";
-    clearTimeout(toast.timer);
-    toast.timer = setTimeout(() => $("toast").style.display = "none", 2600);
-  }
+ // 圍牆與宮殿
+ box(scene,0,1.6,-18,38,3.2,.7,wall);
+ box(scene,0,1.6,18,38,3.2,.7,wall);
+ box(scene,-18,1.6,0,.7,3.2,36,wall);
+ box(scene,18,1.6,0,.7,3.2,36,wall);
 
-  function setRole(role) {
-    myRole = role;
-    $("chooseWei").classList.toggle("selected", role === "wei");
-    $("chooseHai").classList.toggle("selected", role === "hai");
-  }
-
-  $("chooseWei").onclick = () => setRole("wei");
-  $("chooseHai").onclick = () => setRole("hai");
-
-  $("joinBtn").onclick = function() {
-    roomName = $("roomName").value.trim() || "紫禁城";
-    socket.emit("joinRoom", { room: roomName, role: myRole });
-    $("joinBtn").disabled = true;
-    $("joinBtn").textContent = "正在進入……";
-  };
-
-  socket.on("joined", function(data) {
-    joined = true;
-    myId = socket.id;
-    myRole = data.role;
-    roomName = data.room;
-    $("joinScreen").style.display = "none";
-    $("joinBtn").disabled = false;
-    $("joinBtn").textContent = "進入紫禁城";
-
-    if (!tutorialWasShown) {
-      $("tutorial").style.display = "flex";
-      tutorialWasShown = true;
-    }
-
-    toast("已進入「" + roomName + "」，角色：" +
-      (myRole === "wei" ? "韋小寶" : "海大富"));
+ [-13,13].forEach(z=>{
+  box(scene,0,1.45,z,14,2.9,4,red);
+  box(scene,0,3.05,z,15,.25,4.7,gold);
+  const r=new THREE.Mesh(new THREE.ConeGeometry(8.4,2.3,4),roof);
+  r.rotation.y=Math.PI/4;r.scale.set(1,.5,.48);r.position.set(0,4,z);r.castShadow=true;scene.add(r);
+  [-5,-2.5,0,2.5,5].forEach(x=>{
+   box(scene,x,1.4,z-2.05,.26,2.8,.26,dark);
+   box(scene,x,1.4,z+2.05,.26,2.8,.26,dark);
   });
+ });
+ [-14,14].forEach(x=>[-10,-5,0,5,10].forEach(z=>{
+  const p=new THREE.Mesh(new THREE.CylinderGeometry(.28,.34,3.3,12),red);
+  p.position.set(x,1.65,z);p.castShadow=true;scene.add(p);
+  box(scene,x,3.35,z,.65,.72,.65,gold);
+ }));
 
-  socket.on("joinError", function(message) {
-    $("joinBtn").disabled = false;
-    $("joinBtn").textContent = "進入紫禁城";
-    toast(message);
-  });
-
-  socket.on("opponentLeft", function() {
-    toast("對手已離開房間。等待另一位玩家加入。");
-  });
-
-  socket.on("state", function(s) {
-    state = s;
-    if (state.winner) {
-      $("result").style.display = "flex";
-      if (state.winner === "draw") {
-        $("resultTitle").textContent = "平局";
-        $("resultText").textContent = "雙方同時倒下。重新整理戰局，再決勝負！";
-      } else {
-        const winnerName = state.winner === "wei" ? "韋小寶" : "海大富";
-        $("resultTitle").textContent = winnerName + " 獲勝！";
-        $("resultText").textContent = "紫禁城的勝負已分。重新開始可以重置角色與場景。";
-      }
-    } else {
-      $("result").style.display = "none";
-    }
-    updateHud();
-  });
-
-  $("helpBtn").onclick = () => $("tutorial").style.display = "flex";
-  $("closeTutorial").onclick = () => $("tutorial").style.display = "none";
-  $("resultTutorialBtn").onclick = () => {
-    $("result").style.display = "none";
-    $("tutorial").style.display = "flex";
-  };
-  $("restartBtn").onclick = () => {
-    socket.emit("restart");
-    $("result").style.display = "none";
-  };
-  $("backBtn").onclick = () => {
-    location.reload();
-  };
-
-  function updateHud() {
-    if (!state) return;
-    const wei = state.players.find(p => p.role === "wei");
-    const hai = state.players.find(p => p.role === "hai");
-
-    if (wei) {
-      $("weiHp").style.width = (wei.hp / wei.maxHp * 100) + "%";
-      $("weiNumbers").textContent = wei.hp + " / " + wei.maxHp;
-      $("weiResource").style.width = (wei.shenXing / 120 * 100) + "%";
-    }
-
-    if (hai) {
-      $("haiHp").style.width = (hai.hp / hai.maxHp * 100) + "%";
-      $("haiNumbers").textContent = hai.hp + " / " + hai.maxHp;
-      $("haiResource").style.width = (hai.shenfa / 100 * 100) + "%";
-    }
-
-    const me = state.players.find(p => p.id === myId);
-    if (!state.started) {
-      $("status").textContent = "房間「" + roomName + "」｜等待另一位玩家加入……";
-    } else if (me) {
-      const skill = me.specialCooldown > 0
-        ? "特殊技冷卻 " + Math.ceil(me.specialCooldown / 60) + " 秒"
-        : "特殊技就緒";
-      const resource = me.role === "wei"
-        ? "神行能量 " + Math.floor(me.shenXing) + "｜脫身 " + me.escapes + " 次"
-        : "身法能量 " + Math.floor(me.shenfa);
-      $("status").textContent = resource + "｜" + skill +
-        (me.lastAction ? "｜最近動作：" + me.lastAction : "");
-    }
+ const obstacles=[
+  {id:"screenA",x:0,z:-6,w:8,d:.55,h:2.2,kind:"screen"},
+  {id:"screenB",x:0,z:6,w:8,d:.55,h:2.2,kind:"screen"},
+  {id:"pillarA",x:-8,z:0,w:.9,d:.9,h:3.1,kind:"pillar"},
+  {id:"pillarB",x:8,z:0,w:.9,d:.9,h:3.1,kind:"pillar"},
+  {id:"wallA",x:-12,z:-10,w:7,d:1,h:3,kind:"wall"},
+  {id:"wallB",x:12,z:-10,w:7,d:1,h:3,kind:"wall"},
+  {id:"wallC",x:-12,z:10,w:7,d:1,h:3,kind:"wall"},
+  {id:"wallD",x:12,z:10,w:7,d:1,h:3,kind:"wall"}
+ ];
+ obstacles.forEach(o=>{
+  const m=box(scene,o.x,o.h/2,o.z,o.w,o.h,o.d,
+   o.kind==="screen"?mat(0x9a5132):o.kind==="pillar"?dark:red);
+  obstacleMeshes.set(o.id,m);
+  if(o.kind==="screen"){
+   box(scene,o.x,o.h+.07,o.z,o.w+.18,.14,o.d+.12,gold);
+   for(let x=-o.w/2+.5;x<o.w/2;x+=1.1)box(scene,o.x+x,1.05,o.z,.045,1.7,.06,gold);
   }
+ });
 
-  function sendInput() {
-    if (!joined) return;
-    const packed = JSON.stringify(keys);
-    if (packed !== lastSent) {
-      socket.emit("input", keys);
-      lastSent = packed;
-    }
-  }
+ // 宮燈
+ [-5,5].forEach(x=>{
+  const lamp=new THREE.Mesh(new THREE.SphereGeometry(.28,12,10),
+   new THREE.MeshBasicMaterial({color:0xffbd51}));
+  lamp.position.set(x,5.4,0);scene.add(lamp);
+ });
+}
 
-  function keyDown(e) {
-    const k = e.key.toLowerCase();
-    const mapping = {
-      w:"up", arrowup:"up",
-      s:"down", arrowdown:"down",
-      a:"left", arrowleft:"left",
-      d:"right", arrowright:"right",
-      " ":"attack", j:"attack",
-      k:"special",
-      l:"escape", shift:"escape",
-      u:"wallrun", i:"pillar", o:"vault"
-    };
-    const action = mapping[k];
-    if (!action) return;
+function makeCharacter(role){
+ const group=new THREE.Group();
+ const wei=role==="韋小寶";
+ const robe=mat(wei?0x315e91:0x692a24);
+ const trim=mat(wei?0xd9bd77:0xb4a080);
+ const skin=mat(0xe0b28a),pants=mat(0x252832),black=mat(0x17191d);
+ const body= new THREE.Mesh(new THREE.CapsuleGeometry(.39,.64,4,8),robe);
+ body.position.y=1.24;body.castShadow=true;group.add(body);
+ const head=new THREE.Mesh(new THREE.SphereGeometry(.3,14,12),skin);
+ head.position.y=2.02;head.castShadow=true;group.add(head);
+ const hat=new THREE.Mesh(new THREE.CylinderGeometry(.29,.32,.15,12),black);
+ hat.position.y=2.29;group.add(hat);
+ const belt=new THREE.Mesh(new THREE.TorusGeometry(.4,.045,6,16),trim);
+ belt.rotation.x=Math.PI/2;belt.position.y=1.05;group.add(belt);
+ [-1,1].forEach(side=>{
+  const leg=new THREE.Mesh(new THREE.CapsuleGeometry(.14,.38,3,7),pants);
+  leg.position.set(side*.2,.48,0);group.add(leg);
+  const arm=new THREE.Mesh(new THREE.CapsuleGeometry(.12,.43,3,7),robe);
+  arm.position.set(side*.45,1.42,0);arm.rotation.z=side*.35;group.add(arm);
+ });
+ const sword=new THREE.Mesh(new THREE.BoxGeometry(.055,.72,.1),mat(0xc7d4dc,.25,.7));
+ sword.position.set(.48,1.16,.2);sword.rotation.z=-.6;group.add(sword);
+
+ const c=document.createElement("canvas");c.width=256;c.height=64;
+ const ctx=c.getContext("2d");ctx.fillStyle="#17130ee8";ctx.fillRect(0,0,256,64);
+ ctx.fillStyle=wei?"#d5e8ff":"#ffe0c1";ctx.font="bold 30px sans-serif";
+ ctx.textAlign="center";ctx.fillText(role,128,42);
+ const label=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(c),transparent:true}));
+ label.position.y=2.75;label.scale.set(1.8,.45,1);group.add(label);
+ group.userData.body=body;group.userData.sword=sword;group.userData.robes=[robe];
+ return group;
+}
+
+function makeItem(item){
+ const colors={"石灰粉":0xe8dfb5,"暗器":0xa9bacb,"煙霧彈":0x7f8597,"寶衣":0x45a16c,"匕首":0xd1dce8};
+ const g=new THREE.Group();
+ const core=new THREE.Mesh(new THREE.OctahedronGeometry(.27),mat(colors[item.type]||0xffffff,.4,.15));
+ core.position.y=.55;g.add(core);
+ const ring=new THREE.Mesh(new THREE.TorusGeometry(.38,.035,6,20),
+  new THREE.MeshBasicMaterial({color:colors[item.type]||0xffffff}));
+ ring.rotation.x=Math.PI/2;ring.position.y=.18;g.add(ring);
+ g.position.set(item.x,0,item.z);scene.add(g);return g;
+}
+
+function updateState(s){
+ state=s;
+ const present=new Set(s.players.map(p=>p.id));
+ for(const [id,m] of meshes)if(!present.has(id)){scene.remove(m);meshes.delete(id);}
+ s.players.forEach(p=>{
+  let m=meshes.get(p.id);
+  if(!m){m=makeCharacter(p.role);scene.add(m);meshes.set(p.id,m);}
+  const y=p.jumping?Math.sin((performance.now()%420)/420*Math.PI)*.8:0;
+  m.position.set(p.x,y,p.z);m.rotation.y=p.yaw;
+  m.userData.body.material.emissive.setHex(p.hit?0x551111:0x000000);
+  m.userData.sword.visible=p.attacking;
+  m.userData.sword.rotation.z=p.attacking?-1.25:-.6;
+  m.visible=true;
+  if(p.id===myId)updateHud(p);
+ });
+
+ const itemIds=new Set(s.items.map(i=>i.id));
+ for(const [id,m] of itemMeshes)if(!itemIds.has(id)){scene.remove(m);itemMeshes.delete(id);}
+ s.items.forEach(i=>{
+  if(!itemMeshes.has(i.id))itemMeshes.set(i.id,makeItem(i));
+ });
+ itemMeshes.forEach((m,id)=>{
+  m.rotation.y+=.025;
+  m.position.y=.05+Math.sin(performance.now()*.003+id)*.08;
+ });
+
+ s.destroyed.forEach(id=>{
+  const m=obstacleMeshes.get(id);if(m)m.visible=false;
+ });
+ $("messages").innerHTML=s.messages.map(m=>"<div>"+esc(m.text)+"</div>").join("");
+ if(s.winner){
+  $("overlay").style.display="flex";
+  $("start").textContent="重新開始";
+  $("wait").textContent="勝者："+s.winner+"。重新整理頁面可再次配對。";
+ }
+}
+
+function updateHud(p){
+ $("role").textContent="角色："+p.role+"　戰績："+p.score;
+ $("hpFill").style.width=p.hp+"%";
+ $("stFill").style.width=p.stamina+"%";
+ $("status").textContent=!state.started?"等待對手加入":!p.alive?"本局落敗":state.winner?"勝者："+state.winner:"紫禁城對決中";
+ const names=["石灰粉","暗器","煙霧彈","寶衣","匕首"];
+ $("items").innerHTML=names.map((n,i)=>(i+1)+". "+n+" × "+(p.inventory[n]||0)).join("<br>");
+}
+
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function action(type,item){if(joined)socket.emit("action",{type,item});}
+
+function sendInput(){
+ if(!joined||!state||!state.started)return;
+ const len=Math.hypot(joystick.x,joystick.y);
+ let sx=joystick.x,sy=joystick.y;
+ if(len>1){sx/=len;sy/=len;}
+ // 搖桿上推代表沿著角色鏡頭前方移動
+ const forward=-sy,right=sx;
+ const dx=Math.sin(yaw)*forward+Math.cos(yaw)*right;
+ const dz=Math.cos(yaw)*forward-Math.sin(yaw)*right;
+ socket.emit("input",{dx:dx,dz:dz,yaw:yaw,blocking:blockHeld});
+}
+
+function updateCamera(dt){
+ if(!state||!state.me)return;
+ const p=state.me;
+ const target=new THREE.Vector3(p.x,1.35+jumpVisual,p.z);
+ const d=6.3;
+ const desired=new THREE.Vector3(
+  p.x+Math.sin(yaw)*Math.cos(pitch)*d,
+  target.y+1.7+Math.sin(pitch)*d,
+  p.z+Math.cos(yaw)*Math.cos(pitch)*d
+ );
+ camera.position.lerp(desired,Math.min(1,dt*7));
+ camera.lookAt(target);
+}
+
+function animate(){
+ requestAnimationFrame(animate);
+ if(!renderer)return;
+ const dt=Math.min(clock.getDelta(),.05);
+ const t=performance.now();
+ if(jumpSpeed!==0||jumpVisual>0){
+  jumpVisual+=jumpSpeed*dt;jumpSpeed-=11*dt;
+  if(jumpVisual<=0){jumpVisual=0;jumpSpeed=0;}
+ }
+ if(t-lastSend>45){sendInput();lastSend=t;}
+ updateCamera(dt);
+ renderer.render(scene,camera);
+}
+
+function setupControls(){
+ const base=$("stickBase"),stick=$("stick");
+ function setStick(e){
+  const r=base.getBoundingClientRect();
+  const cx=r.left+r.width/2,cy=r.top+r.height/2;
+  let dx=(e.clientX-cx)/43,dy=(e.clientY-cy)/43;
+  const l=Math.hypot(dx,dy);if(l>1){dx/=l;dy/=l;}
+  joystick.x=dx;joystick.y=dy;
+  stick.style.left=(36+dx*34)+"px";stick.style.top=(36+dy*34)+"px";
+ }
+ base.addEventListener("pointerdown",e=>{
+  e.preventDefault();joystick.active=true;joystick.pointer=e.pointerId;
+  base.setPointerCapture(e.pointerId);setStick(e);
+ });
+ base.addEventListener("pointermove",e=>{
+  if(joystick.active&&e.pointerId===joystick.pointer)setStick(e);
+ });
+ function resetStick(){
+  joystick.active=false;joystick.x=0;joystick.y=0;
+  stick.style.left="36px";stick.style.top="36px";
+ }
+ base.addEventListener("pointerup",resetStick);
+ base.addEventListener("pointercancel",resetStick);
+
+ document.querySelectorAll("[data-action]").forEach(btn=>{
+  const type=btn.dataset.action;
+  if(type==="block"){
+   btn.addEventListener("pointerdown",e=>{e.preventDefault();blockHeld=true;btn.classList.add("active");});
+   const release=()=>{blockHeld=false;btn.classList.remove("active");};
+   btn.addEventListener("pointerup",release);
+   btn.addEventListener("pointercancel",release);
+   btn.addEventListener("pointerleave",release);
+  }else{
+   btn.addEventListener("pointerdown",e=>{
     e.preventDefault();
-
-    if (action === "escape" && myRole !== "wei") return;
-    if (["wallrun","pillar","vault"].includes(action) && myRole !== "hai") return;
-
-    if (!pressed[action]) {
-      pressed[action] = true;
-      keys[action] = true;
-      sendInput();
-    }
+    if(type==="jump"){jumpSpeed=5.5;action(type);}
+    else action(type);
+   });
   }
+ });
+ document.querySelectorAll("[data-item]").forEach(btn=>{
+  btn.addEventListener("pointerdown",e=>{e.preventDefault();action("useItem",btn.dataset.item);});
+ });
 
-  function keyUp(e) {
-    const k = e.key.toLowerCase();
-    const mapping = {
-      w:"up", arrowup:"up",
-      s:"down", arrowdown:"down",
-      a:"left", arrowleft:"left",
-      d:"right", arrowright:"right",
-      " ":"attack", j:"attack",
-      k:"special",
-      l:"escape", shift:"escape",
-      u:"wallrun", i:"pillar", o:"vault"
-    };
-    const action = mapping[k];
-    if (!action) return;
-    e.preventDefault();
-    pressed[action] = false;
-    keys[action] = false;
-    sendInput();
-  }
+ // 手指在畫面右半部滑動可轉動視角
+ let lookPointer=null,lastX=0,lastY=0;
+ renderer.domElement.addEventListener("pointerdown",e=>{
+  if(e.pointerType==="mouse"&&e.button===0){action("attack");return;}
+  if(e.clientX>innerWidth*.38){lookPointer=e.pointerId;lastX=e.clientX;lastY=e.clientY;}
+ });
+ renderer.domElement.addEventListener("pointermove",e=>{
+  if(lookPointer!==e.pointerId)return;
+  const dx=e.clientX-lastX,dy=e.clientY-lastY;
+  yaw-=dx*.006;pitch=Math.max(-.12,Math.min(.7,pitch+dy*.003));
+  lastX=e.clientX;lastY=e.clientY;
+ });
+ const endLook=e=>{if(lookPointer===e.pointerId)lookPointer=null;};
+ renderer.domElement.addEventListener("pointerup",endLook);
+ renderer.domElement.addEventListener("pointercancel",endLook);
 
-  window.addEventListener("keydown", keyDown);
-  window.addEventListener("keyup", keyUp);
-  window.addEventListener("blur", function() {
-    Object.keys(keys).forEach(k => keys[k] = false);
-    Object.keys(pressed).forEach(k => pressed[k] = false);
-    sendInput();
-  });
+ document.addEventListener("keydown",e=>{
+  if(e.repeat||!joined)return;
+  const map={KeyJ:"attack",KeyK:"heavy",ShiftLeft:"dodge",Space:"jump",KeyE:"pickup",KeyR:"break"};
+  if(map[e.code])action(map[e.code]);
+  const names=["石灰粉","暗器","煙霧彈","寶衣","匕首"];
+  if(/^Digit[1-5]$/.test(e.code))action("useItem",names[Number(e.code.slice(-1))-1]);
+  if(e.code==="KeyL")blockHeld=true;
+ });
+ document.addEventListener("keyup",e=>{if(e.code==="KeyL")blockHeld=false;});
+ addEventListener("resize",()=>{
+  camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+ });
+}
 
-  document.querySelectorAll("[data-key]").forEach(function(btn) {
-    const action = btn.dataset.key;
+$("start").addEventListener("click",()=>{
+ if(joined){
+  location.reload();return;
+ }
+ $("start").disabled=true;$("start").textContent="正在配對";
+ $("wait").textContent="等待另一名玩家進入……";
+ socket.emit("joinGame");
+});
 
-    function start(e) {
-      e.preventDefault();
-      if (action === "escape" && myRole !== "wei") return;
-      if (["wallrun","pillar","vault"].includes(action) && myRole !== "hai") return;
-      keys[action] = true;
-      sendInput();
-    }
+socket.on("joined",data=>{
+ myId=data.id;myRole=data.role;joined=true;
+ $("overlay").style.display="none";
+});
+socket.on("state",updateState);
+socket.on("connect_error",()=>{$("wait").textContent="連線失敗，請重新整理頁面。";});
 
-    function end(e) {
-      e.preventDefault();
-      keys[action] = false;
-      sendInput();
-    }
-
-    btn.addEventListener("pointerdown", start);
-    btn.addEventListener("pointerup", end);
-    btn.addEventListener("pointercancel", end);
-    btn.addEventListener("pointerleave", end);
-    btn.addEventListener("contextmenu", e => e.preventDefault());
-  });
-
-  function roundedRect(x,y,w,h,r) {
-    ctx.beginPath();
-    ctx.roundRect(x,y,w,h,r);
-  }
-
-  function drawFloor() {
-    const g = ctx.createLinearGradient(0,0,1200,760);
-    g.addColorStop(0,"#4c2b22");
-    g.addColorStop(.45,"#34231d");
-    g.addColorStop(1,"#201814");
-    ctx.fillStyle = g;
-    ctx.fillRect(0,0,1200,760);
-
-    for (let y=24; y<736; y+=48) {
-      for (let x=24; x<1176; x+=48) {
-        const alt = ((x/48 + y/48) % 2) === 0;
-        ctx.fillStyle = alt ? "#4c3026" : "#412920";
-        ctx.fillRect(x,y,48,48);
-        ctx.strokeStyle = "#9b6b3c35";
-        ctx.lineWidth = 1;
-        ctx.strokeRect(x+.5,y+.5,47,47);
-
-        ctx.strokeStyle = "#c3985b20";
-        ctx.beginPath();
-        ctx.moveTo(x+8,y+8); ctx.lineTo(x+16,y+8);
-        ctx.moveTo(x+8,y+8); ctx.lineTo(x+8,y+16);
-        ctx.stroke();
-      }
-    }
-
-    ctx.strokeStyle = "#d2a45d";
-    ctx.lineWidth = 3;
-    ctx.strokeRect(38,38,1124,684);
-    ctx.strokeStyle = "#8e5d31";
-    ctx.lineWidth = 1;
-    ctx.strokeRect(45,45,1110,670);
-
-    for (let i=0; i<12; i++) {
-      const x = 65 + i*97;
-      ctx.fillStyle = "#b98a4c";
-      ctx.fillRect(x,35,22,5);
-      ctx.fillRect(x,720,22,5);
-    }
-
-    ctx.save();
-    ctx.globalAlpha = .10;
-    ctx.strokeStyle = "#f5d18b";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(600,380,145,0,Math.PI*2);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(600,380,125,0,Math.PI*2);
-    ctx.stroke();
-    ctx.translate(600,380);
-    for (let i=0; i<8; i++) {
-      ctx.rotate(Math.PI/4);
-      ctx.strokeRect(-4,-150,8,300);
-    }
-    ctx.restore();
-
-    drawLantern(62,80);
-    drawLantern(1138,80);
-    drawLantern(62,680);
-    drawLantern(1138,680);
-  }
-
-  function drawLantern(x,y) {
-    ctx.save();
-    ctx.shadowColor = "#ff8a36";
-    ctx.shadowBlur = 18;
-    ctx.fillStyle = "#f4a34f";
-    ctx.beginPath();
-    ctx.ellipse(x,y,8,12,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.strokeStyle = "#6c2b18";
-    ctx.lineWidth = 2;
-    ctx.stroke();
-    ctx.fillStyle = "#f9d28a";
-    ctx.fillRect(x-3,y-17,6,5);
-    ctx.fillRect(x-3,y+12,6,7);
-    ctx.restore();
-  }
-
-  function drawWall(r) {
-    ctx.save();
-    ctx.shadowColor = "#0009";
-    ctx.shadowBlur = 10;
-    ctx.shadowOffsetY = 4;
-    const g = ctx.createLinearGradient(r.x,r.y,r.x,r.y+r.h);
-    g.addColorStop(0,"#b18a56");
-    g.addColorStop(.25,"#795031");
-    g.addColorStop(1,"#3b241b");
-    ctx.fillStyle = g;
-    ctx.fillRect(r.x,r.y,r.w,r.h);
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-    ctx.strokeStyle = "#e3bf7b";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(r.x+1,r.y+1,r.w-2,r.h-2);
-    ctx.strokeStyle = "#3b2119";
-    ctx.lineWidth = 2;
-    if (r.w > r.h) {
-      for (let x=r.x+12; x<r.x+r.w; x+=24) {
-        ctx.beginPath(); ctx.moveTo(x,r.y+3); ctx.lineTo(x,r.y+r.h-3); ctx.stroke();
-      }
-    } else {
-      for (let y=r.y+12; y<r.y+r.h; y+=24) {
-        ctx.beginPath(); ctx.moveTo(r.x+3,y); ctx.lineTo(r.x+r.w-3,y); ctx.stroke();
-      }
-    }
-    ctx.restore();
-  }
-
-  function drawMap(map) {
-    if (!map) return;
-
-    for (const f of map.floors) {
-      ctx.save();
-      if (f.state === 0) {
-        ctx.fillStyle = "#6d4931";
-        ctx.fillRect(f.x,f.y,f.w,f.h);
-        ctx.strokeStyle = "#d2a66b";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(f.x+2,f.y+2,f.w-4,f.h-4);
-        ctx.strokeStyle = "#3b281f";
-        for (let x=f.x+12; x<f.x+f.w; x+=24) {
-          ctx.beginPath(); ctx.moveTo(x,f.y+3); ctx.lineTo(x,f.y+f.h-3); ctx.stroke();
-        }
-      } else if (f.state === 1) {
-        ctx.fillStyle = "#42332b";
-        ctx.fillRect(f.x,f.y,f.w,f.h);
-        ctx.strokeStyle = "#f0b76a";
-        ctx.lineWidth = 2;
-        ctx.strokeRect(f.x+2,f.y+2,f.w-4,f.h-4);
-        ctx.strokeStyle = "#e2bd89";
-        ctx.beginPath();
-        ctx.moveTo(f.x+10,f.y+10);
-        ctx.lineTo(f.x+f.w*.35,f.y+f.h*.45);
-        ctx.lineTo(f.x+f.w*.25,f.y+f.h*.8);
-        ctx.moveTo(f.x+f.w*.7,f.y+8);
-        ctx.lineTo(f.x+f.w*.6,f.y+f.h*.55);
-        ctx.lineTo(f.x+f.w-8,f.y+f.h*.7);
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = "#120d0b";
-        ctx.fillRect(f.x,f.y,f.w,f.h);
-        ctx.strokeStyle = "#d89d58";
-        ctx.setLineDash([5,5]);
-        ctx.strokeRect(f.x+2,f.y+2,f.w-4,f.h-4);
-        ctx.setLineDash([]);
-      }
-      ctx.restore();
-    }
-
-    for (const r of map.walls) drawWall(r);
-
-    for (const s of map.screens) {
-      ctx.save();
-      ctx.shadowColor = "#000";
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = "#6f2926";
-      ctx.fillRect(s.x,s.y,s.w,s.h);
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = "#d8b36d";
-      ctx.lineWidth = 2;
-      ctx.strokeRect(s.x,s.y,s.w,s.h);
-      for (let x=s.x+8; x<s.x+s.w; x+=18) {
-        ctx.strokeStyle = "#edc77e";
-        ctx.beginPath(); ctx.moveTo(x,s.y+3); ctx.lineTo(x,s.y+s.h-3); ctx.stroke();
-      }
-      ctx.restore();
-    }
-
-    for (const c of map.crates) {
-      if (c.hp <= 0) {
-        ctx.strokeStyle = "#c99a5b66";
-        ctx.strokeRect(c.x+5,c.y+5,c.w-10,c.h-10);
-        continue;
-      }
-
-      ctx.save();
-      ctx.shadowColor = "#000";
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = "#86522b";
-      ctx.fillRect(c.x,c.y,c.w,c.h);
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = "#e0b46d";
-      ctx.lineWidth = 3;
-      ctx.strokeRect(c.x+2,c.y+2,c.w-4,c.h-4);
-      ctx.strokeStyle = "#422619";
-      ctx.lineWidth = 4;
-      ctx.beginPath();
-      ctx.moveTo(c.x+5,c.y+5); ctx.lineTo(c.x+c.w-5,c.y+c.h-5);
-      ctx.moveTo(c.x+c.w-5,c.y+5); ctx.lineTo(c.x+5,c.y+c.h-5);
-      ctx.stroke();
-      if (c.hp < c.maxHp) {
-        ctx.fillStyle = "#160d0a";
-        ctx.fillRect(c.x,c.y-7,c.w,4);
-        ctx.fillStyle = "#e6ae59";
-        ctx.fillRect(c.x,c.y-7,c.w*c.hp/c.maxHp,4);
-      }
-      ctx.restore();
-    }
-
-    for (const p of map.pillars) {
-      ctx.save();
-
-      if (p.fallen) {
-        ctx.translate(p.x,p.y);
-        ctx.rotate(.3);
-        ctx.fillStyle = "#6d4832";
-        ctx.fillRect(-28,-10,56,20);
-        ctx.strokeStyle = "#d4a86b";
-        ctx.lineWidth = 3;
-        ctx.strokeRect(-28,-10,56,20);
-        ctx.restore();
-        continue;
-      }
-
-      ctx.shadowColor = "#000a";
-      ctx.shadowBlur = 10;
-      const grad = ctx.createRadialGradient(p.x-8,p.y-9,2,p.x,p.y,p.r+8);
-      grad.addColorStop(0,"#e0bd83");
-      grad.addColorStop(.55,"#9a6b3e");
-      grad.addColorStop(1,"#4a2c1f");
-      ctx.fillStyle = grad;
-      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
-      ctx.shadowBlur = 0;
-      ctx.strokeStyle = "#f2d095";
-      ctx.lineWidth = 3;
-      ctx.stroke();
-      ctx.strokeStyle = "#4d2c1d";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(p.x,p.y,p.r-7,0,Math.PI*2);
-      ctx.stroke();
-
-      if (p.hp < p.maxHp) {
-        ctx.fillStyle = "#1a100d";
-        ctx.fillRect(p.x-22,p.y-p.r-11,44,5);
-        ctx.fillStyle = "#dba45a";
-        ctx.fillRect(p.x-22,p.y-p.r-11,44*p.hp/p.maxHp,5);
-      }
-      ctx.restore();
-    }
-  }
-
-  function drawPlayer(p) {
-    ctx.save();
-    ctx.translate(p.x,p.y);
-
-    if (p.invincible > 0 && Math.floor(p.invincible/3)%2===0) {
-      ctx.globalAlpha = .48;
-    }
-
-    const hai = p.role === "hai";
-    const main = hai ? "#d7a24e" : "#398da4";
-    const dark = hai ? "#57361d" : "#183e59";
-    const light = hai ? "#f4d49a" : "#a9e5ed";
-
-    if (p.movementMode !== "ground" || p.specialFlash > 0) {
-      ctx.save();
-      ctx.rotate(-p.angle);
-      ctx.strokeStyle = hai ? "#ffbc60" : "#8cecff";
-      ctx.lineWidth = 3;
-      ctx.globalAlpha = .65;
-      ctx.beginPath();
-      ctx.ellipse(0,0,p.r+10,p.r+16,0,0,Math.PI*2);
-      ctx.stroke();
-      ctx.restore();
-    }
-
-    ctx.shadowColor = "#000";
-    ctx.shadowBlur = 10;
-    ctx.fillStyle = dark;
-    ctx.beginPath();
-    ctx.ellipse(0,5,p.r+4,p.r+2,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.shadowBlur = 0;
-
-    ctx.fillStyle = main;
-    ctx.beginPath();
-    ctx.moveTo(-p.r*.85,-p.r*.55);
-    ctx.lineTo(p.r*.8,-p.r*.6);
-    ctx.lineTo(p.r*1.05,p.r*.8);
-    ctx.lineTo(-p.r*.9,p.r*.8);
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.strokeStyle = light;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    ctx.fillStyle = light;
-    ctx.beginPath();
-    ctx.ellipse(0,-p.r*.7,p.r*.62,p.r*.67,0,0,Math.PI*2);
-    ctx.fill();
-
-    ctx.fillStyle = dark;
-    ctx.beginPath();
-    ctx.ellipse(0,-p.r*1.12,p.r*.72,p.r*.22,0,0,Math.PI*2);
-    ctx.fill();
-    ctx.fillRect(-p.r*.58,-p.r*1.45,p.r*1.16,4);
-
-    ctx.rotate(p.angle);
-    ctx.strokeStyle = hai ? "#f5dfad" : "#e9fbff";
-    ctx.lineWidth = 4;
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    ctx.moveTo(p.r*.5,2);
-    ctx.lineTo(p.r+11,2);
-    ctx.stroke();
-
-    if (!hai) {
-      ctx.strokeStyle = "#b7efff";
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(p.r+10,-2);
-      ctx.lineTo(p.r+18,2);
-      ctx.lineTo(p.r+10,6);
-      ctx.stroke();
-    } else {
-      ctx.fillStyle = "#f6d28c";
-      ctx.beginPath();
-      ctx.arc(p.r+10,2,4,0,Math.PI*2);
-      ctx.fill();
-    }
-
-    if (p.attackFlash > 0) {
-      ctx.globalAlpha = p.attackFlash/10;
-      ctx.strokeStyle = hai ? "#ffcf79" : "#b5f3ff";
-      ctx.lineWidth = 5;
-      ctx.beginPath();
-      ctx.arc(0,0,p.r+25,-.75,.75);
-      ctx.stroke();
-    }
-
-    ctx.restore();
-
-    ctx.save();
-    ctx.font = "bold 14px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#140b09";
-    ctx.fillText(hai ? "海大富" : "韋小寶",p.x+1,p.y-p.r-25+1);
-    ctx.fillStyle = hai ? "#f5d28a" : "#a9ecf7";
-    ctx.fillText(hai ? "海大富" : "韋小寶",p.x,p.y-p.r-25);
-
-    ctx.fillStyle = "#180e0c";
-    ctx.fillRect(p.x-23,p.y-p.r-18,46,5);
-    ctx.fillStyle = hai ? "#e3ad58" : "#60c8df";
-    ctx.fillRect(p.x-23,p.y-p.r-18,46*p.hp/p.maxHp,5);
-    ctx.restore();
-  }
-
-  function drawEffects(effects) {
-    for (const e of effects || []) {
-      const alpha = Math.max(0,e.life/e.maxLife);
-      ctx.save();
-      ctx.globalAlpha = alpha;
-      ctx.translate(e.x,e.y);
-
-      if (e.type === "afterimage") {
-        ctx.fillStyle = e.color;
-        ctx.beginPath();
-        ctx.ellipse(0,0,10,18,e.angle,0,Math.PI*2);
-        ctx.fill();
-      } else if (e.type === "hit") {
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth = 3;
-        for (let i=0; i<6; i++) {
-          const a = i*Math.PI/3;
-          ctx.beginPath();
-          ctx.moveTo(Math.cos(a)*4,Math.sin(a)*4);
-          ctx.lineTo(Math.cos(a)*e.size*alpha,Math.sin(a)*e.size*alpha);
-          ctx.stroke();
-        }
-      } else if (e.type === "slash") {
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth = 6*alpha;
-        ctx.beginPath();
-        ctx.arc(0,0,e.size,-1.1,.9);
-        ctx.stroke();
-      } else if (e.type === "strike") {
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth = 4*alpha;
-        ctx.beginPath();
-        ctx.arc(0,0,e.size,-.8,.8);
-        ctx.stroke();
-      } else if (e.type === "shockwave" || e.type === "burst") {
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth = 4*alpha;
-        ctx.beginPath();
-        ctx.arc(0,0,e.size*(1-alpha*.4),0,Math.PI*2);
-        ctx.stroke();
-        if (e.type === "burst") {
-          ctx.fillStyle = e.color;
-          ctx.globalAlpha = alpha*.15;
-          ctx.beginPath();
-          ctx.arc(0,0,e.size*alpha,0,Math.PI*2);
-          ctx.fill();
-        }
-      } else if (e.type === "collapse" || e.type === "ko") {
-        ctx.strokeStyle = e.color;
-        ctx.lineWidth = 3*alpha;
-        ctx.beginPath();
-        ctx.arc(0,0,e.size*(1-alpha*.4),0,Math.PI*2);
-        ctx.stroke();
-        for (let i=0; i<7; i++) {
-          const a = i*Math.PI*2/7 + e.angle;
-          ctx.fillStyle = e.color;
-          ctx.fillRect(Math.cos(a)*e.size*.5,Math.sin(a)*e.size*.5,5*alpha,5*alpha);
-        }
-      }
-      ctx.restore();
-    }
-  }
-
-  function drawWaitingOverlay() {
-    if (state && state.started) return;
-
-    ctx.save();
-    ctx.fillStyle = "#100b0bc9";
-    ctx.fillRect(300,325,600,110);
-    ctx.strokeStyle = "#d7ad68";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(300,325,600,110);
-    ctx.textAlign = "center";
-    ctx.fillStyle = "#f5d28a";
-    ctx.font = "bold 27px serif";
-    ctx.fillText("紫禁城對決",600,368);
-    ctx.fillStyle = "#ead8b8";
-    ctx.font = "17px sans-serif";
-    ctx.fillText("等待另一位玩家加入同一房間……",600,401);
-    ctx.restore();
-  }
-
-  function render() {
-    ctx.clearRect(0,0,1200,760);
-    drawFloor();
-
-    if (state && state.map) {
-      drawMap(state.map);
-      drawEffects(state.effects);
-
-      for (const p of state.players) drawPlayer(p);
-      drawWaitingOverlay();
-    } else {
-      drawWaitingOverlay();
-    }
-
-    requestAnimationFrame(render);
-  }
-
-  render();
+buildScene();
+clock=new THREE.Clock();
+setupControls();
+animate();
 })();
 </script>
 </body>
 </html>`;
 
-app.get("/", (req, res) => res.send(html));
-
-server.listen(PORT, () => {
-  console.log("紫禁城風雲伺服器已啟動：" + PORT);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log("3D 武俠格鬥遊戲已啟動，port " + PORT);
 });
-
-setInterval(gameLoop, 1000 / 60) ; 
