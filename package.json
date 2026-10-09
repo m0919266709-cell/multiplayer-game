@@ -1,8 +1,14 @@
 {
-  "name": "multiplayer-game",
+  "name": "jin-yong-3d-wuxia",
   "version": "1.0.0",
   "private": true,
+  "description": "韋小寶對決海大富：3D多人武俠格鬥遊戲",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "dependencies": { "express": "^5.1.0", "socket.io": "^4.8.1" }
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
 }
