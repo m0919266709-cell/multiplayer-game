@@ -1,4 +1,3 @@
-
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -433,6 +432,7 @@ function doAction(room, p, action) {
   }
 }
 
+// 困難 AI：伺服器端決策、移動與出招。
 function aiThink(room, bot) {
   if (!bot.isAI || !bot.alive || !room.started || room.winner) return;
   const t = now();
@@ -705,9 +705,7 @@ setInterval(() => {
 
         if (p.effectUntil < t) {
           if (p.effect === "robe" && p.robeUntil > t) {
-            // 寶衣效果仍然有效。
           } else if (p.effect === "smoke" && p.smokeUntil > t) {
-            // 煙霧效果仍然有效。
           } else {
             p.effect = "";
           }
@@ -850,32 +848,14 @@ canvas{display:block}
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-(function loadThree(urls, index) {
-  index = index || 0;
-  if (window.THREE) {
-    window.dispatchEvent(new Event("three-ready"));
-    return;
-  }
-  if (index >= urls.length) {
-    document.getElementById("loadStatus").textContent =
-      "無法載入 3D 引擎。請確認網路可連線，再重新整理頁面。";
-    return;
-  }
-  const script = document.createElement("script");
-  script.src = urls[index];
-  script.onload = () => window.dispatchEvent(new Event("three-ready"));
-  script.onerror = () => loadThree(urls, index + 1);
-  document.head.appendChild(script);
-})([
-  "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
-  "https://unpkg.com/three@0.160.0/build/three.min.js"
-]);
-
+// Three.js 改用 ES module 載入，避免舊版 three.min.js CDN 路徑失效。
 window.addEventListener("three-ready", () => {
 "use strict";
 
 const THREE = window.THREE;
 const $ = id => document.getElementById(id);
+const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+const rand = (min, max) => min + Math.random() * (max - min);
 const socket = io();
 
 let myId = null, myRole = null, roomState = null, gameMode = "ai";
@@ -1734,6 +1714,7 @@ $("start").addEventListener("click",() => {
     }
   } catch(err) {
     console.error("3D 初始化失敗：",err);
+    $("loadStatus").textContent = "3D 場景初始化失敗：" + (err && err.message ? err.message : "未知錯誤") + "。請截圖這段訊息給我。";
     return;
   }
 
@@ -1749,6 +1730,29 @@ $("start").addEventListener("click",() => {
 
 setInterval(sendInput,50);
 });
+
+(async function loadThreeModule() {
+  const status = document.getElementById("loadStatus");
+  const urls = [
+    "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "https://unpkg.com/three@0.160.0/build/three.module.js"
+  ];
+  let lastError = null;
+  for (const url of urls) {
+    try {
+      const module = await import(url);
+      window.THREE = module;
+      window.dispatchEvent(new Event("three-ready"));
+      return;
+    } catch (err) {
+      lastError = err;
+      console.error("Three.js 載入失敗：", url, err);
+    }
+  }
+  status.textContent = "3D 引擎載入失敗。請確認網路可連線後重新整理；若仍失敗，請將此訊息告訴我。";
+  console.error("無法載入 Three.js：", lastError);
+})();
+
 </script>
 </body>
 </html>`;
