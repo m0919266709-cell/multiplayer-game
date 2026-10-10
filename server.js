@@ -1,3 +1,4 @@
+
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -432,7 +433,6 @@ function doAction(room, p, action) {
   }
 }
 
-// 困難 AI：伺服器端決策、移動與出招。
 function aiThink(room, bot) {
   if (!bot.isAI || !bot.alive || !room.started || room.winner) return;
   const t = now();
@@ -722,6 +722,8 @@ setInterval(() => {
   }
 }, 50);
 
+app.get("/", (req, res) => res.send(PAGE));
+
 const PAGE = `<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
@@ -766,7 +768,7 @@ canvas{display:block}
 #joyLabel{position:absolute;left:0;right:0;bottom:10px;text-align:center;font-size:10px;color:#e5d4ad;opacity:.75;pointer-events:none}
 #buttons{display:grid;grid-template-columns:repeat(3,minmax(43px,56px));gap:5px;pointer-events:auto}
 .act{height:49px;border-radius:50%;border:1px solid #d9c18b99;background:linear-gradient(145deg,#273247ef,#101722f0);color:#fff0cb;font-size:10px;font-weight:800;box-shadow:0 3px 10px #0008;touch-action:manipulation;padding:0}
-.act:active{transform:scale(.92);filter:brightness(1.5)}
+.act:active,.act.pressed,.itembtn.pressed{transform:scale(.92);filter:brightness(1.5)}
 .act.primary{background:linear-gradient(145deg,#a23b2b,#4a171c);border-color:#f2b58c}
 .act.skill{background:linear-gradient(145deg,#5c3a83,#211832);border-color:#c2a6f0}
 #items{position:absolute;right:9px;top:116px;display:flex;flex-direction:column;gap:4px;pointer-events:auto}
@@ -848,7 +850,6 @@ canvas{display:block}
 
 <script src="/socket.io/socket.io.js"></script>
 <script>
-// Three.js 改用 ES module 載入，避免舊版 three.min.js CDN 路徑失效。
 window.addEventListener("three-ready", () => {
 "use strict";
 
@@ -866,6 +867,7 @@ let lookTouch = null, joyPointer = null, started = false;
 let playerMeshes = new Map(), itemMeshes = new Map(), objectMeshes = new Map();
 let handGroup, weaponGroup, flashLight, ambientParticles = [];
 let audioCtx = null;
+let lastInputSent = 0;
 const keys = {};
 
 const selected = { role: "wei", mode: "ai" };
@@ -1404,10 +1406,65 @@ function bindControls() {
   renderer.domElement.addEventListener("pointerup",endLook);
   renderer.domElement.addEventListener("pointercancel",endLook);
 
-  document.querySelectorAll("[data-action]").forEach(btn => {
-    btn.addEventListener("pointerdown",e => e.preventDefault());
-    btn.addEventListener("click",() => action(btn.dataset.action));
-  });
+  // 所有戰鬥按鈕與動態道具按鈕共用同一個事件委派。
+  // 不再於 pointerdown 呼叫 preventDefault，避免手機瀏覽器取消 click。
+  if (!window.__duelActionDelegationBound) {
+    window.__duelActionDelegationBound = true;
+    let lastActionAt = 0;
+    let lastActionName = "";
+
+    const runButtonAction = event => {
+      const btn = event.target && event.target.closest
+        ? event.target.closest("[data-action]") : null;
+      if (!btn || btn.disabled) return;
+
+      const hud = document.getElementById("hud");
+      if (!hud || hud.style.display === "none") return;
+
+      const name = btn.dataset.action;
+      if (!name) return;
+
+      const t = Date.now();
+      if (name === lastActionName && t - lastActionAt < 350) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      lastActionAt = t;
+      lastActionName = name;
+      event.preventDefault();
+      event.stopPropagation();
+
+      btn.classList.add("pressed");
+      setTimeout(() => btn.classList.remove("pressed"), 120);
+      action(name);
+    };
+
+    document.addEventListener("pointerup", runButtonAction, true);
+
+    if (!window.PointerEvent) {
+      document.addEventListener("touchend", runButtonAction, {
+        capture: true,
+        passive: false
+      });
+    }
+
+    document.addEventListener("click", event => {
+      const btn = event.target && event.target.closest
+        ? event.target.closest("[data-action]") : null;
+      if (!btn || btn.disabled) return;
+
+      const t = Date.now();
+      if (btn.dataset.action === lastActionName && t - lastActionAt < 350) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      runButtonAction(event);
+    }, true);
+  }
 
   window.addEventListener("keydown",e => {
     keys[e.code] = true;
@@ -1425,6 +1482,7 @@ function bindControls() {
     if(e.code === "Digit4") action("item:robe");
     if(e.code === "Digit5") action("item:dagger");
   });
+
   window.addEventListener("keyup",e => keys[e.code] = false);
   window.addEventListener("blur",() => {
     joyEnd();
@@ -1594,7 +1652,8 @@ function updateHud(state) {
       b.className = "itembtn";
       b.textContent = names[key]+" × "+n;
       b.disabled = n <= 0;
-      b.onclick = () => action("item:"+key);
+      b.dataset.action = "item:" + key;
+      b.type = "button";
       items.appendChild(b);
     }
   } else {
@@ -1602,7 +1661,8 @@ function updateHud(state) {
       const b = document.createElement("button");
       b.className = "itembtn";
       b.textContent = ["化骨綿掌","陰毒掌法","擒拿","內力護體"][i];
-      b.onclick = () => action("skill:"+key);
+      b.dataset.action = "skill:" + key;
+      b.type = "button";
       items.appendChild(b);
     });
   }
@@ -1738,6 +1798,7 @@ setInterval(sendInput,50);
     "https://unpkg.com/three@0.160.0/build/three.module.js"
   ];
   let lastError = null;
+
   for (const url of urls) {
     try {
       const module = await import(url);
@@ -1749,15 +1810,13 @@ setInterval(sendInput,50);
       console.error("Three.js 載入失敗：", url, err);
     }
   }
+
   status.textContent = "3D 引擎載入失敗。請確認網路可連線後重新整理；若仍失敗，請將此訊息告訴我。";
   console.error("無法載入 Three.js：", lastError);
 })();
-
 </script>
 </body>
 </html>`;
-
-app.get("/", (req, res) => res.send(PAGE));
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log("紫禁城 3D 對決伺服器已啟動：" + PORT);
