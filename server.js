@@ -878,8 +878,8 @@ canvas{display:block}
   script.onerror = () => loadThree(urls, index + 1);
   document.head.appendChild(script);
 })([
-  "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js",
-  "https://unpkg.com/three@0.160.0/build/three.min.js"
+  "https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js",
+  "https://unpkg.com/three@0.159.0/build/three.min.js"
 ]);
 
 window.addEventListener("three-ready", () => {
